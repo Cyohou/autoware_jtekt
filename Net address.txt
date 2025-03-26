@@ -3,3 +3,37 @@ https://1drv.ms/u/c/b6b1a053519f5505/EaLAxzPGz4xJnNw_PZY7VfEBGEIOP7y_cyFNqtbXTPQ
 https://1drv.ms/u/c/b6b1a053519f5505/EZ8SlUZkikdDlPb-Tp8e_C4Bxr60lFlFhilAVf2wbftdXQ
 
 https://1drv.ms/u/c/b6b1a053519f5505/EcuKSXWIUVxFjvBKwM2VP-cBa3sOHIuk0Fmge03HpKwKUQ  kvaser 状态测试程序
+
+guo@Koku:~/OAS2.0/OAS package$ ros2 launch traject_plan_control first_launch.launch.py
+[INFO] [launch]: All log files can be found below /home/guo/.ros/log/2025-03-26-11-55-44-938963-Koku-14734
+[INFO] [launch]: Default logging verbosity is set to INFO
+[INFO] [bridge_adjacent_inside-1]: process started with pid [14736]
+[INFO] [read_from_kvaser-2]: process started with pid [14739]
+[read_from_kvaser-2] Traceback (most recent call last):
+[read_from_kvaser-2]   File "/home/guo/OAS2.0/OAS package/install/kvaser_parser_ros/lib/kvaser_parser_ros/read_from_kvaser", line 33, in <module>
+[read_from_kvaser-2]     sys.exit(load_entry_point('kvaser-parser-ros==0.0.0', 'console_scripts', 'read_from_kvaser')())
+[read_from_kvaser-2]   File "/home/guo/OAS2.0/OAS package/install/kvaser_parser_ros/lib/python3.8/site-packages/kvaser_parser_ros/read_from_kvaser.py", line 127, in main
+[read_from_kvaser-2]     rclpy.spin(node)
+[read_from_kvaser-2]   File "/opt/ros/galactic/lib/python3.8/site-packages/rclpy/__init__.py", line 196, in spin
+[read_from_kvaser-2]     executor.spin_once()
+[read_from_kvaser-2]   File "/opt/ros/galactic/lib/python3.8/site-packages/rclpy/executors.py", line 713, in spin_once
+[read_from_kvaser-2]     raise handler.exception()
+[read_from_kvaser-2]   File "/opt/ros/galactic/lib/python3.8/site-packages/rclpy/task.py", line 239, in __call__
+[read_from_kvaser-2]     self._handler.send(None)
+[read_from_kvaser-2]   File "/opt/ros/galactic/lib/python3.8/site-packages/rclpy/executors.py", line 418, in handler
+[read_from_kvaser-2]     await call_coroutine(entity, arg)
+[read_from_kvaser-2]   File "/opt/ros/galactic/lib/python3.8/site-packages/rclpy/executors.py", line 332, in _execute_timer
+[read_from_kvaser-2]     await await_or_execute(tmr.callback)
+[read_from_kvaser-2]   File "/opt/ros/galactic/lib/python3.8/site-packages/rclpy/executors.py", line 107, in await_or_execute
+[read_from_kvaser-2]     return callback(*args)
+[read_from_kvaser-2]   File "/home/guo/OAS2.0/OAS package/install/kvaser_parser_ros/lib/python3.8/site-packages/kvaser_parser_ros/read_from_kvaser.py", line 30, in <lambda>
+[read_from_kvaser-2]     self.timer = self.create_timer(1.0/1000.0, lambda:self.read_can_data(self.receive_dbc))
+[read_from_kvaser-2]   File "/home/guo/OAS2.0/OAS package/install/kvaser_parser_ros/lib/python3.8/site-packages/kvaser_parser_ros/read_from_kvaser.py", line 80, in read_can_data
+[read_from_kvaser-2]     frame = self.ch.read(timeout=100) 
+[read_from_kvaser-2]   File "/home/guo/.local/lib/python3.8/site-packages/canlib/canlib/channel.py", line 941, in read
+[read_from_kvaser-2]     dll.canReadWait(self.handle, id_, msg, dlc, flag, time, timeout)
+[read_from_kvaser-2]   File "/home/guo/.local/lib/python3.8/site-packages/canlib/canlib/dll.py", line 194, in _error_check
+[read_from_kvaser-2]     raise can_error(result)
+[read_from_kvaser-2] canlib.canlib.exceptions.CanNoMsg: No messages available (-2)
+[ERROR] [read_from_kvaser-2]: process has died [pid 14739, exit code 1, cmd '/home/guo/OAS2.0/OAS package/install/kvaser_parser_ros/lib/kvaser_parser_ros/read_from_kvaser --ros-args'].
+
