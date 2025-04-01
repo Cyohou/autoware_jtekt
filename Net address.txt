@@ -1,1 +1,8 @@
-https://1drv.ms/u/c/b6b1a053519f5505/EXq47lhCPP1JkNda9iXK-BcBzh6GFfy4yfnJlKqbFOL9uA
+guo@Koku:~$ unzip -P tongjijtekt2025 OAS_code_package_2.0.zip -d output_directory
+Archive:  OAS_code_package_2.0.zip
+   skipping: OAS code package 2.0/Mannual of OAS system model v2.0.20241210.docx  unsupported compression method 99
+   skipping: OAS code package 2.0/map_package_656e331-dirty.tar.gz  unsupported compression method 99
+   skipping: OAS code package 2.0/OAS package_v2.0.zi_  unsupported compression method 99
+   skipping: OAS code package 2.0/requirements.txt  unsupported compression method 99
+   skipping: OAS code package 2.0/simulink code_v2.0.zip  unsupported compression method 99
+   creating: output_directory/OAS code package 2.0/
