@@ -1,8 +1,17 @@
-guo@Koku:~$ unzip -P tongjijtekt2025 OAS_code_package_2.0.zip -d output_directory
-Archive:  OAS_code_package_2.0.zip
-   skipping: OAS code package 2.0/Mannual of OAS system model v2.0.20241210.docx  unsupported compression method 99
-   skipping: OAS code package 2.0/map_package_656e331-dirty.tar.gz  unsupported compression method 99
-   skipping: OAS code package 2.0/OAS package_v2.0.zi_  unsupported compression method 99
-   skipping: OAS code package 2.0/requirements.txt  unsupported compression method 99
-   skipping: OAS code package 2.0/simulink code_v2.0.zip  unsupported compression method 99
-   creating: output_directory/OAS code package 2.0/
+guo@Koku:~/OAS package_v2.0$ ros2 launch traject_plan_control first_launch.launch.py
+[INFO] [launch]: All log files can be found below /home/guo/.ros/log/2025-04-01-16-18-39-762706-Koku-13915
+[INFO] [launch]: Default logging verbosity is set to INFO
+[INFO] [bridge_adjacent_inside-1]: process started with pid [13917]
+[INFO] [read_from_kvaser-2]: process started with pid [13919]
+[bridge_adjacent_inside-1] [INFO] [1743491921.799114962] [bridge]: -----Successfully create my bridge node!-----
+[bridge_adjacent_inside-1] Traceback (most recent call last):
+[bridge_adjacent_inside-1]   File "/home/guo/OAS package_v2.0/install/my_bridge/lib/my_bridge/bridge_adjacent_inside", line 33, in <module>
+[bridge_adjacent_inside-1]     sys.exit(load_entry_point('my-bridge==0.0.0', 'console_scripts', 'bridge_adjacent_inside')())
+[bridge_adjacent_inside-1]   File "/home/guo/OAS package_v2.0/install/my_bridge/lib/python3.8/site-packages/my_bridge/bridge_adjacent_thread_inside_ad.py", line 434, in main
+[bridge_adjacent_inside-1]     carla_bridge.destroy()
+[bridge_adjacent_inside-1]   File "/home/guo/OAS package_v2.0/install/my_bridge/lib/python3.8/site-packages/my_bridge/bridge_adjacent_thread_inside_ad.py", line 375, in destroy
+[bridge_adjacent_inside-1]     if self.on_tick:
+[bridge_adjacent_inside-1] AttributeError: 'CarlaRosBridge' object has no attribute 'on_tick'
+[bridge_adjacent_inside-1] [INFO] [1743491924.990543106] [bridge]: --in bridge---wait for Stop tick thread----
+[bridge_adjacent_inside-1] [INFO] [1743491925.194251494] [bridge]: destroy node
+[ERROR] [bridge_adjacent_inside-1]: process has died [pid 13917, exit code 1, cmd '/home/guo/OAS package_v2.0/install/my_bridge/lib/my_bridge/bridge_adjacent_inside --ros-args'].
