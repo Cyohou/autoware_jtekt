@@ -1,1 +1,16 @@
-首先可以更改一下destroy函数，如图片中所示，同时，还有一个可能存在的问题，就是在carla_bridge.initialize_bridge(carla_world) line425的时候会初始化self.on_tick，你正常使用ctrl + c调用destroy()函数的时候，应该不会报错；所以出现问题可能是因为carla_bridge.initialize_bridge(carla_world)这个函数中初始化self.on_tick前的代码出现问题
+guo@Koku:~/OAS package_v2.0$ source ./install/setup.bash
+guo@Koku:~/OAS package_v2.0$ ros2 launch traject_plan_control first_launch.launch.py
+[INFO] [launch]: All log files can be found below /home/guo/.ros/log/2025-04-02-10-00-31-286657-Koku-20676
+[INFO] [launch]: Default logging verbosity is set to INFO
+[INFO] [bridge_adjacent_inside-1]: process started with pid [20684]
+[INFO] [read_from_kvaser-2]: process started with pid [20686]
+[bridge_adjacent_inside-1] [INFO] [1743555633.116756053] [bridge]: -----Successfully create my bridge node!-----
+[bridge_adjacent_inside-1] Traceback (most recent call last):
+[bridge_adjacent_inside-1]   File "/home/guo/OAS package_v2.0/install/my_bridge/lib/my_bridge/bridge_adjacent_inside", line 33, in <module>
+[bridge_adjacent_inside-1]     sys.exit(load_entry_point('my-bridge==0.0.0', 'console_scripts', 'bridge_adjacent_inside')())
+[bridge_adjacent_inside-1]   File "/home/guo/OAS package_v2.0/install/my_bridge/lib/python3.8/site-packages/my_bridge/bridge_adjacent_thread_inside_ad.py", line 437, in main
+[bridge_adjacent_inside-1]     carla_client.apply_batch([carla.command.DestroyActor(x) for x in carla_bridge.actor_list])
+[bridge_adjacent_inside-1] AttributeError: 'CarlaRosBridge' object has no attribute 'actor_list'
+[bridge_adjacent_inside-1] [INFO] [1743555643.215551346] [bridge]: --in bridge---wait for Stop tick thread----
+[bridge_adjacent_inside-1] [INFO] [1743555643.419402798] [bridge]: destroy node
+[ERROR] [bridge_adjacent_inside-1]: process has died [pid 20684, exit code 1, cmd '/home/guo/OAS package_v2.0/install/my_bridge/lib/my_bridge/bridge_adjacent_inside --ros-args'].
