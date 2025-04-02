@@ -1,17 +1,1 @@
-guo@Koku:~/OAS package_v2.0$ ros2 launch traject_plan_control first_launch.launch.py
-[INFO] [launch]: All log files can be found below /home/guo/.ros/log/2025-04-01-16-18-39-762706-Koku-13915
-[INFO] [launch]: Default logging verbosity is set to INFO
-[INFO] [bridge_adjacent_inside-1]: process started with pid [13917]
-[INFO] [read_from_kvaser-2]: process started with pid [13919]
-[bridge_adjacent_inside-1] [INFO] [1743491921.799114962] [bridge]: -----Successfully create my bridge node!-----
-[bridge_adjacent_inside-1] Traceback (most recent call last):
-[bridge_adjacent_inside-1]   File "/home/guo/OAS package_v2.0/install/my_bridge/lib/my_bridge/bridge_adjacent_inside", line 33, in <module>
-[bridge_adjacent_inside-1]     sys.exit(load_entry_point('my-bridge==0.0.0', 'console_scripts', 'bridge_adjacent_inside')())
-[bridge_adjacent_inside-1]   File "/home/guo/OAS package_v2.0/install/my_bridge/lib/python3.8/site-packages/my_bridge/bridge_adjacent_thread_inside_ad.py", line 434, in main
-[bridge_adjacent_inside-1]     carla_bridge.destroy()
-[bridge_adjacent_inside-1]   File "/home/guo/OAS package_v2.0/install/my_bridge/lib/python3.8/site-packages/my_bridge/bridge_adjacent_thread_inside_ad.py", line 375, in destroy
-[bridge_adjacent_inside-1]     if self.on_tick:
-[bridge_adjacent_inside-1] AttributeError: 'CarlaRosBridge' object has no attribute 'on_tick'
-[bridge_adjacent_inside-1] [INFO] [1743491924.990543106] [bridge]: --in bridge---wait for Stop tick thread----
-[bridge_adjacent_inside-1] [INFO] [1743491925.194251494] [bridge]: destroy node
-[ERROR] [bridge_adjacent_inside-1]: process has died [pid 13917, exit code 1, cmd '/home/guo/OAS package_v2.0/install/my_bridge/lib/my_bridge/bridge_adjacent_inside --ros-args'].
+首先可以更改一下destroy函数，如图片中所示，同时，还有一个可能存在的问题，就是在carla_bridge.initialize_bridge(carla_world) line425的时候会初始化self.on_tick，你正常使用ctrl + c调用destroy()函数的时候，应该不会报错；所以出现问题可能是因为carla_bridge.initialize_bridge(carla_world)这个函数中初始化self.on_tick前的代码出现问题
