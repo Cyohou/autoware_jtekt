@@ -1,32 +1,23 @@
-guo@Koku:~/OAS_package2.0$ source ./install/setup.bash
-guo@Koku:~/OAS_package2.0$ ros2 launch traject_plan_control first_launch.launch.py
-[INFO] [launch]: All log files can be found below /home/guo/.ros/log/2025-04-03-15-39-32-564887-Koku-75767
-[INFO] [launch]: Default logging verbosity is set to INFO
-[INFO] [bridge_adjacent_inside-1]: process started with pid [75769]
-[INFO] [read_from_kvaser-2]: process started with pid [75771]
-[bridge_adjacent_inside-1] [INFO] [1743662375.261111510] [bridge]: -----Successfully create my bridge node!-----
-[bridge_adjacent_inside-1] Trying to connect to localhost:2000
-[bridge_adjacent_inside-1] Loading town 'jtekt_2409' (previous: 'map_package/Maps/jtekt_2409/jtekt_2409').
-[bridge_adjacent_inside-1] 第 425 行
-[bridge_adjacent_inside-1] 第 146 行
-[bridge_adjacent_inside-1] Loading adjacent trajectory...
-[bridge_adjacent_inside-1] Loadadjacent trajectory successfully!
-[bridge_adjacent_inside-1] 第 235 行
-[bridge_adjacent_inside-1] ego_per circle cost=1743662377.2452545
-[bridge_adjacent_inside-1] ego_per circle cost=0.00055694580078125
-[bridge_adjacent_inside-1] ego_per circle cost=0.0009448528289794922
-[bridge_adjacent_inside-1] ego_per circle cost=0.0008206367492675781
-[bridge_adjacent_inside-1] ego_per circle cost=0.0010440349578857422
-[bridge_adjacent_inside-1] ego_per circle cost=0.0009722709655761719
-[bridge_adjacent_inside-1] ego_per circle cost=0.0010149478912353516
-[bridge_adjacent_inside-1] ego_per circle cost=0.0009336471557617188
-[bridge_adjacent_inside-1] ego_per circle cost=0.0010023117065429688
-[bridge_adjacent_inside-1] ego_per circle cost=0.0010943412780761719
-[bridge_adjacent_inside-1] ego_per circle cost=0.0009598731994628906
-[bridge_adjacent_inside-1] ego_per circle cost=0.003094911575317383
-[bridge_adjacent_inside-1] ego_per circle cost=0.0002930164337158203
-[bridge_adjacent_inside-1] ego_per circle cost=0.00021696090698242188
-[bridge_adjacent_inside-1] ego_per circle cost=0.0003972053527832031
-[bridge_adjacent_inside-1] ego_per circle cost=0.0008878707885742188
-[bridge_adjacent_inside-1] ego_per circle cost=0.0009963512420654297
-[bridge_adjacent_inside-1] inner time word_update circle cost=0.0017805099487304688
+CARLA_EGO_INIT_X = 36
+CARLA_EGO_INIT_Y = 24  # the coordinate system of carla is left-handed,so y and yaw is negative
+CARLA_EGO_INIT_Z = 0.01
+CARLA_EGO_INIT_YAW = -0.6384  # rad
+CARLA_SPECTATOR_DX = -0.10
+CARLA_SPECTATOR_DY = -0.35
+CARLA_SPECTATOR_DZ = 1.2
+AD_TIMER_PERIOD = 0.02  # 每0.02秒发布一次
+
+CARLA_ADJACENT_MODEL_FILTER = "model3"
+CARLA_ADJACENT_STATE_TOPIC_NAME = "adjacent"
+CARLA_ADJACENT_INIT_X = 411.5616
+CARLA_ADJACENT_INIT_Y = 239.2926
+CARLA_ADJACENT_INIT_Z = 0.1
+CARLA_ADJACENT_INIT_YAW = -0.0259  # rad
+BEND_START_X = 402.1685
+BEND_START_Y = -243.5376
+# BEND_START_X = 369.303
+# BEND_START_Y = -249.936 
+# BEND_START_X = 432.6
+# BEND_START_Y = -240.7
+BEND_END_X = 570.7475
+BEND_END_Y = -304.8953
