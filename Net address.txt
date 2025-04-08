@@ -1,23 +1,38 @@
-CARLA_EGO_INIT_X = 36
-CARLA_EGO_INIT_Y = 24  # the coordinate system of carla is left-handed,so y and yaw is negative
-CARLA_EGO_INIT_Z = 0.01
-CARLA_EGO_INIT_YAW = -0.6384  # rad
-CARLA_SPECTATOR_DX = -0.10
-CARLA_SPECTATOR_DY = -0.35
-CARLA_SPECTATOR_DZ = 1.2
-AD_TIMER_PERIOD = 0.02  # 每0.02秒发布一次
-
-CARLA_ADJACENT_MODEL_FILTER = "model3"
-CARLA_ADJACENT_STATE_TOPIC_NAME = "adjacent"
-CARLA_ADJACENT_INIT_X = 411.5616
-CARLA_ADJACENT_INIT_Y = 239.2926
-CARLA_ADJACENT_INIT_Z = 0.1
-CARLA_ADJACENT_INIT_YAW = -0.0259  # rad
-BEND_START_X = 402.1685
-BEND_START_Y = -243.5376
-# BEND_START_X = 369.303
-# BEND_START_Y = -249.936 
-# BEND_START_X = 432.6
-# BEND_START_Y = -240.7
-BEND_END_X = 570.7475
-BEND_END_Y = -304.8953
+guo@Koku:~/OAS_package2.0$ source install/setup.bash
+guo@Koku:~/OAS_package2.0$ ros2 launch traject_plan_control second_launch.launch.py
+[INFO] [launch]: All log files can be found below /home/guo/.ros/log/2025-04-08-14-01-29-231972-Koku-24859
+[INFO] [launch]: Default logging verbosity is set to INFO
+[INFO] [cameranode1-1]: process started with pid [24865]
+[INFO] [write_to_kvaser-2]: process started with pid [24867]
+[INFO] [rl_online-3]: process started with pid [24869]
+[INFO] [stanley_control-4]: process started with pid [24954]
+[stanley_control-4] Loading global_road Data...
+[stanley_control-4] Load global_road successfully!
+[stanley_control-4] Loading global_road Data...
+[stanley_control-4] Load global_road successfully!
+[stanley_control-4] Loading global_road Data...
+[stanley_control-4] Load global_road successfully!
+[stanley_control-4] /usr/bin/python3
+[stanley_control-4] False
+[stanley_control-4] False
+[stanley_control-4] False
+[stanley_control-4] False
+[stanley_control-4] False
+[stanley_control-4] False
+[stanley_control-4] False
+[stanley_control-4] False
+[stanley_control-4] False
+[stanley_control-4] Control: ego_x=508.9599914550781, ego_y=-365.5199890136719
+[stanley_control-4] False
+[stanley_control-4] False
+[stanley_control-4] False
+[stanley_control-4] False
+[stanley_control-4] False
+[stanley_control-4] False
+[stanley_control-4] False
+[stanley_control-4] False
+[stanley_control-4] Control: ego_x=508.9599914550781, ego_y=-365.5199890136719
+[stanley_control-4] False
+[stanley_control-4] False
+[stanley_control-4] False
+[stanley_control-4] False
