@@ -1,1 +1,8 @@
-https://1drv.ms/u/c/b6b1a053519f5505/EWfpjyyoLTNEqfNuxpsKHpIBokd66A8XUz-Ms9J1fKoGUg
+guo@Koku:~/OAS_package2.0/rl_train/rl_train/reward_online_calc$ python3 online_risk_evaluation.py
+Loading Data...
+Loading Data...
+Load data successfully!
+Traceback (most recent call last):
+  File "online_risk_evaluation.py", line 475, in <module>
+    Reward = Feature_calculator(road_left, road_right)
+TypeError: __init__() takes 2 positional arguments but 3 were given
