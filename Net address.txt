@@ -1,2 +1,561 @@
-sudo chrt -f 80 python3 write_to_kvaser.py
-sudo chrt -f 80 python3 read_from_kvaser.py
+import os
+import sys
+# 获取当前文件的绝对路径
+current_file_path = os.path.abspath(__file__)
+# 获取当前文件所在的目录
+current_directory = os.path.dirname(current_file_path)
+# 将当前目录加入到 sys.path
+if current_directory not in sys.path:
+    sys.path.append(current_directory)
+
+import numpy as np
+import scipy.linalg as spla                          # for least-square problems
+from data.data_process import natural_road_data      # for debug
+import time                                              # for debug
+import matplotlib.pyplot as plt                          # for debug
+from online_readdata import *
+import pandas as pd
+from multiprocessing import Pool
+from CubicSpline import cubic_spline_planner
+from scipy import signal
+from datetime import datetime 
+# from data.data_process_obsdebug import natural_road_data      # for obs error debug
+
+
+
+def curvature_cal(trajectory):
+    """curvatue calculate
+
+    Args:
+        trajectory (np.array([x, y, speed])): the coordinate of trajectory
+
+    Returns:
+        np.array([cur1, cur2,...]): curvatue of every point on trajectory
+    """
+    CURV_RANGE = 5
+
+
+    curvature = np.zeros((trajectory.shape[0], 1))
+    x = trajectory[:, 0]
+    y = trajectory[:, 1]
+    dis = np.sqrt(np.diff(x)**2 + np.diff(y)**2)
+    dis = np.cumsum(dis)
+    dis = np.insert(dis, 0, 0)
+
+    start_time = time.time()
+    for i in range(trajectory.shape[0]):
+        start_step_time = time.time()
+        # step forward to curve_range to get maximum id_max
+        id_max = i
+        dis_curve = dis[i]
+        while dis[id_max] - dis_curve < CURV_RANGE:
+            id_max += 1
+            if id_max >= trajectory.shape[0]:
+                break
+        # step backward to curve_range to get minimum id_min
+        id_min = i
+        while dis_curve - dis[id_min] < CURV_RANGE:
+            id_min -= 1
+            if id_min <= 0:
+                id_min = 0
+                break
+        # get the interpolation that closes to each node
+        x_close = x[id_min:id_max]
+        y_close = y[id_min:id_max]
+        if len(x_close) <= 3:
+            curvature[i] = 0
+            continue
+        # 2 order poly fit
+        param_t = dis[id_min:id_max] - dis[id_min]
+        coef_matrix = np.zeros((len(x_close), 3))
+        coef_matrix[:,0] = 1                 # Constant term
+        coef_matrix[:,1] = param_t           # Coefficient of linear term
+        coef_matrix[:,2] = param_t*param_t   # Coefficient of quadratic term
+
+        # QR method to solve Least-Squares problem,  because np.linalg.solve can only solve square matrix Ax = b
+        coef_x = np.linalg.lstsq(coef_matrix, x_close, rcond=None)[0]
+        coef_y = np.linalg.lstsq(coef_matrix, y_close, rcond=None)[0]
+
+        # curvature calculation through Curvature calculation formula of reference equations 
+        x_dot = coef_x[1]   # x' = b + 2ct   but param_t = 0 and the start point of x_close
+        x_ddot = 2 * coef_x[2]
+        y_dot = coef_y[1]
+        y_ddot = 2 * coef_y[2]
+        curvature[i] = (x_dot*y_ddot - x_ddot*y_dot) / (x_dot**2 + y_dot**2+1e-5)**(3./2)
+        
+        if np.abs(curvature[i]) < 0.00001:
+            curvature[i] = 0
+        end_step_time = time.time()
+        # print(f"Step {i} took {end_step_time - start_step_time} seconds")
+
+    end_time = time.time()
+    # print(f"Total time of curvature calculate: {end_time - start_time} seconds")
+    return curvature
+
+
+
+def road_process(road_left,road_right):
+    # read land data
+    #计算车道线的航向角，因为hjh接口车道数据x,y,theta
+    theta = np.zeros((road_left.shape[0],1))
+    theta[:-1,0] = np.arctan2(road_left[1:,1]-road_left[:-1,1], road_left[1:,0]-road_left[:-1,0]) 
+    theta[-1,0] = theta[-2,0]
+    road_left = np.concatenate((road_left, theta),axis=1)
+    road_right = np.concatenate((road_right, theta),axis=1)
+    centerboundary = (road_left + road_right) / 2
+    leftcenterline = (road_left + centerboundary) / 2
+    leftboundary = road_left
+    rightcenterline = (road_right + centerboundary) / 2
+    rightboundary = road_right
+
+    return centerboundary, leftcenterline, leftboundary, rightcenterline,rightboundary
+    
+def distance_cal(trajectory):
+    distance = np.zeros((trajectory.shape[0],))
+    distance[0] = 0
+    for i in range(1,trajectory.shape[0]):
+        distance[i] = distance[i-1] + np.sqrt((trajectory[i,0]-trajectory[i-1,0])**2 + (trajectory[i,1]-trajectory[i-1,1])**2)
+    return distance
+
+def overtaking_process(center,traj_ego,traj_obs,ttc,ctad,dis_center,length=2):
+    # 自车超过临车length以上,ttc和ctad=0,超过距离在0-length,线性插值
+    ttc = np.array(ttc)
+    ctad = np.array(ctad)
+    ttc_process = np.copy(ttc)
+    ctad_process = np.copy(ctad)
+    #找到自车和临车 离中心线最新的点
+    distances_ego_center = np.sum((traj_ego[:,None,:]-center[None,:,:2])**2,axis=-1)
+    distances_obs_center = np.sum((traj_obs[:,None,:]-center[None,:,:2])**2,axis=-1)
+    index_ego = np.argmin(distances_ego_center,axis=-1)
+    index_obs = np.argmin(distances_obs_center,axis=-1)
+    dis_relative = np.zeros((index_ego.shape[0],))
+
+    if np.any(index_ego>index_obs):
+        # dis_center = distance_cal(center)
+        dis_ego = dis_center[index_ego] - dis_center[index_ego[0]]
+        dis_obs = dis_center[index_obs] - dis_center[index_ego[0]]
+        dis_relative = dis_ego-dis_obs
+        ttc_process[dis_relative>=(length+0.1)] = 0
+        ctad_process[dis_relative>=(length+0.1)] = 0
+        
+        # 处理反复超车被超的情况，返回result为两车相对距离0-length的索引
+        result=[]
+        indics = np.where((dis_relative>=0-0.1)& (dis_relative<=length+0.1))[0]  #两边扩大0.1，为了首尾能够插值
+        if indics.shape[0]>0:
+            temp=[indics[0]]
+            for i in range(1,indics.shape[0]):
+                if indics[i]==(indics[i-1]+1):
+                    temp.append(indics[i])
+                else:
+                    result.append(temp)
+                    temp = [indics[i]-1,indics[i]]
+            result.append(temp)
+
+            for i in range(len(result)):
+                #特殊情况：
+                # 1.自车超越邻车，但超过距离小于Length,又被反超车  -> 不改变
+                # 2.自车在邻车前面，两者相对距离缩小到小于Length，但是不低于0，自车又加速拉开距离 -> 零（-1）
+                #情况2
+                if abs(dis_relative[result[i][0]]-length)<0.1 and abs(dis_relative[result[i][-1]]-0)<0.1:
+                    ttc_process[result[i][0]:result[i][-1]] = ttc_process[result[i][0]]
+                    ctad_process[result[i][0]:result[i][-1]] = ctad_process[result[i][0]]
+                # #情况1
+                # elif dis_relative[result[i][0]]<0 and dis_relative[result[i][-1]]<0:
+                #     continue
+                # 正常情况自车完成超车并距离大于length，或自车被超车  -> 线性插值
+                if abs(dis_relative[result[i][0]]-0)<0.1 and abs(dis_relative[result[i][-1]]-length)<0.1:
+                    k_ttc = (-ttc_process[result[i][0]]+0)/(length)
+                    k_ctad = (-ctad_process[result[i][0]]+0)/(length)
+                    for j in range(len(result[i])):
+                        ttc_process[result[i][j]] = ttc_process[result[i][0]]+k_ttc*dis_relative[result[i][j]]
+                        ctad_process[result[i][j]] = ctad_process[result[i][0]]+k_ctad*dis_relative[result[i][j]]
+                # # 正常情况 自车被超车  -> 线性插值
+                # if abs(dis_relative[result[i][0]]-length)<0.1 and abs(dis_relative[result[i][-1]])<0.1:
+                #     k_ttc = (ttc_process[result[i][-1]]-0)/(length)
+                #     k_ctad = (ctad_process[result[i][-1]]-0)/(length)
+                #     for j in range(len(result[i])):
+                #         ttc_process[result[i][j]] = 0+k_ttc*(length-dis_relative[result[i][j]])
+                #         ctad_process[result[i][j]] = 0+k_ctad*(length - dis_relative[result[i][j]])
+    # # for debug
+    # plt.figure()
+    # plt.plot(ttc_process)
+    # plt.plot(ttc)
+    # plt.xlabel('trajectory index')
+    # plt.ylabel('TTC/s')
+
+    # plt.figure()
+    # plt.plot(ctad_process)
+    # plt.plot(ctad)
+    # plt.xlabel('trajectory index')
+    # plt.ylabel('TAD/s')
+    # plt.figure()
+    # plt.plot(dis_relative)
+    # plt.xlabel('trajectory index')
+    # plt.ylabel('distance_relative(m)') 
+    # plt.show()
+    return ttc_process,ctad_process
+
+def trajectory_process(feature_trajectory,obstacle_trajectory,L,SAMPLE_T):
+    #计算航向角
+    feature_yaw = np.zeros(feature_trajectory.shape[0])  
+    obstacle_yaw = np.zeros(obstacle_trajectory.shape[0])
+    feature_yaw[:-1] = np.arctan2(feature_trajectory[1:, 1]-feature_trajectory[:-1, 1], \
+                                  feature_trajectory[1:, 0]-feature_trajectory[:-1, 0])
+    feature_yaw[-1] = feature_yaw[-2]
+    obstacle_yaw[:-1] = np.arctan2(obstacle_trajectory[1:, 1]-obstacle_trajectory[:-1, 1], \
+                                    obstacle_trajectory[1:, 0]-obstacle_trajectory[:-1, 0])
+    obstacle_yaw[-1] = obstacle_yaw[-2]
+    #平滑航向角
+    window_size = 4 # 设置窗口大小
+    feature_yaw = pd.Series(feature_yaw)
+    smooth_ego_yaw = feature_yaw.rolling(window_size).mean()
+    smooth_ego_yaw = smooth_ego_yaw.bfill() #后一个非缺失值来填充缺失值
+    obstacle_yaw = pd.Series(obstacle_yaw)
+    smooth_obstacle_yaw = obstacle_yaw.rolling(window_size).mean()
+    smooth_obstacle_yaw = smooth_obstacle_yaw.bfill()
+
+    #计算自车曲率
+    feature_traj_curvature = curvature_cal(feature_trajectory) 
+
+    #计算前轮转角
+    feature_front_theta = np.arctan(L * feature_traj_curvature)
+
+    # read trajectory data
+    trajectory_state = np.zeros((feature_trajectory.shape[0],11))
+    trajectory_state[:,0] = np.arange(feature_trajectory.shape[0]) #index
+    trajectory_state[:,1] = trajectory_state[:,0]*SAMPLE_T #time
+    trajectory_state[:,2] = feature_trajectory[:,0] #x
+    trajectory_state[:,3] = feature_trajectory[:,1] #y
+    trajectory_state[:,4] = smooth_ego_yaw #yaw
+    trajectory_state[:,5] = feature_trajectory[:,2] #speed m/s ，注意传入单位，数据csv文件是km/h，测试的输入已经除3.6了，这里不用再除
+    trajectory_state[:,6] = feature_front_theta[:,0]#front wheel angle
+    trajectory_state[:,7] = obstacle_trajectory[:,0] #x
+    trajectory_state[:,8] = obstacle_trajectory[:,1] #y
+    trajectory_state[:,9] = smooth_obstacle_yaw #yaw
+    trajectory_state[:,10] = obstacle_trajectory[:,2] #speed
+
+    return trajectory_state
+
+def generate_target_course(x, y):
+    csp = cubic_spline_planner.CubicSpline2D(x, y)
+    s = np.arange(0, csp.s[-1], 0.1)
+
+    rx, ry, ryaw, rk = [], [], [], []
+    for i_s in s:
+        ix, iy = csp.calc_position(i_s)
+        rx.append(ix)
+        ry.append(iy)
+        ryaw.append(csp.calc_yaw(i_s))
+        rk.append(csp.calc_curvature(i_s))
+    return rx, ry, ryaw, rk, csp
+
+
+class Feature_calculator:
+    def __init__(self,lane_id):
+        self.lane_id=lane_id
+        trajectory_data_process = natural_road_data(self.lane_id)
+        ego_trajectory, road, obstacle_trajectory = trajectory_data_process.build_trajectory()
+        road_left = road[:,0:2]
+        road_right = road[:,2:4]
+
+        self.trajectory = np.zeros((0,3))
+        self.obstacle_trajectory = np.zeros((0,3))
+        self.feature_trajectory_frenet = np.zeros((0,6))
+        self.road_left = road_left
+        self.road_right = road_right
+        self.SAMPLE_T = 0.02    
+
+        #TODO：确定车辆轴距
+        self.wheelbase = 2.6 # check 2.875 wheelbase of model3, but use 2.6 in cec experiment VD
+        self.centerboundary, self.leftcenterline, self.leftboundary, self.rightcenterline,self.rightboundary = road_process(road_left,road_right)
+        self.all_lane_data = AllLaneData(self.centerboundary, self.leftcenterline, 
+                                    self.leftboundary, self.rightcenterline,
+                                    self.rightboundary)
+        
+        self.ittcs = []
+        self.ictads = []
+        self.dis_center = distance_cal(self.centerboundary)
+
+        self.frenet_ref_line = self.rightcenterline[:450,:2]
+        self.tx, self.ty, self.tyaw, self.tc, self.csp = generate_target_course(self.frenet_ref_line[:,0], self.frenet_ref_line[:,1])
+        self.road_averagespeed = 45 / 3.6  # m/s
+
+        self.max_efficiency = 2.6
+        self.max_risk_perception = 0.2
+        self.max_max_longitudinal_acc = 0.11 #TODO need to fix during the test
+        self.max_lateral_acc = 1.1
+        self.max_longitudinal_jerk = 1.1
+        
+
+    def rp(self, ego_state, ngb_state):
+        self.trajectory = np.append(self.trajectory, [ego_state], axis=0)
+        self.obstacle_trajectory = np.append(self.obstacle_trajectory, [ngb_state], axis=0)
+
+        if self.trajectory.shape[0] < 20:
+            return 0, 0, 0, 0
+        else:
+            maxlen = 300
+            if self.trajectory.shape[0] > maxlen * 2:
+                self.trajectory = self.trajectory[-maxlen:, :]
+                self.obstacle_trajectory = self.obstacle_trajectory[-maxlen:, :]
+                self.ittcs = self.ittcs[-maxlen:]
+                self.ictads = self.ictads[-maxlen:]
+
+            trajectory_state = trajectory_process(self.trajectory[-6:, :], self.obstacle_trajectory[-6:, :], self.wheelbase, self.SAMPLE_T)
+            vehtraj_data = VehicleTrajData(trajectory_state)
+            vehtraj_data.cal_curvature_str_angle()
+
+            indicator_data = IndicatorData(self.all_lane_data, vehtraj_data)
+            ttc, ttc_flags = indicator_data.func_cal_ttc(indicator_data.drivertraj_data, 0)
+            ttc = ttc[-1]
+            ctad, ctad_flag = indicator_data.cal_ctad(indicator_data.vehtraj_data, 2, 0)
+            ctad = ctad[-1]
+            left_stlc, left_ctlc = indicator_data.cal_tlc(indicator_data.vehtraj_data, self.all_lane_data.leftboundary_data.lane, 2, 0)
+            right_stlc, right_ctlc = indicator_data.cal_tlc(indicator_data.vehtraj_data, self.all_lane_data.rightboundary_data.lane, 2, 0)
+            ctlc = [max(left_ctlc[i], right_ctlc[i]) for i in range(len(left_ctlc))]
+            stlc = [max(left_stlc[i], right_stlc[i]) for i in range(len(left_stlc))]
+            ctlc = ctlc[-1]
+            stlc = stlc[-1]
+
+            [istlc, ictlc, ittc, ictad] = self.inverse([stlc, ctlc, ttc, ctad])
+            self.ittcs.append(ittc)
+            self.ictads.append(ictad)
+
+            length = 2
+            ittc, ictad = overtaking_process(
+                self.centerboundary,
+                self.trajectory[-50:, :2],
+                self.obstacle_trajectory[-50:, :2],
+                self.ittcs[-50:],
+                self.ictads[-50:],
+                self.dis_center,
+                length
+            )
+            ittc = ittc[-1]
+            ictad = ictad[-1]
+
+            # 保存所有指标到 CSV 文件
+            csv_path = "/home/guo/OAS_package2.0/risk_indicators.csv"
+            try:
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] 
+                df = pd.DataFrame([[timestamp, istlc, ictlc, ittc, ictad, stlc, ctlc, ttc, ctad]],
+                  columns=['timestamp', 'istlc', 'ictlc', 'ittc', 'ictad', 'stlc', 'ctlc', 'ttc', 'ctad'])
+                if not os.path.exists(csv_path):
+                    df.to_csv(csv_path, index=False, mode='w')
+                else:
+                    df.to_csv(csv_path, index=False, mode='a', header=False)
+            except Exception as e:
+                print(f"保存风险指标时发生错误: {e}")
+
+            return istlc, ictlc, ittc, ictad
+
+
+        
+    def inverse(self,RPS):
+        iRPS = []
+        for rp in RPS:
+            if rp ==-1:
+                iRPS.append(0)
+            else:
+                iRPS.append(1.0/rp)
+        return iRPS
+    def feature(self,ego_state,ngb_state,yaw):
+        istlc, ictlc, ittc, ictad = self.rp(ego_state,ngb_state)
+        self.feature_trajectory_frenet = np.append(self.feature_trajectory_frenet,
+                                                   [self.calculate_frenet_coordinates(ego_state[0],ego_state[1],ego_state[2],yaw)],axis=0)
+        # print(f"ego_state[2]={ego_state[2]}")
+        if self.feature_trajectory_frenet.shape[0] < 20:
+            return 0,0,0,0,0
+        else:
+            self.feature_trajectory_frenet = self.feature_trajectory_frenet[-20:,:]
+            self.sample_frequency = 1/self.SAMPLE_T
+
+            ego_longitudial_speeds = self.feature_trajectory_frenet[:,4]
+            ego_longitudial_accs = (ego_longitudial_speeds[4::5]-ego_longitudial_speeds[:-4:5])*self.sample_frequency/5.0
+            ego_longitudial_jerks = (ego_longitudial_accs[1:] - ego_longitudial_accs[:-1]) * self.sample_frequency/5.0
+
+            # ego_lateral_speeds = (self.feature_trajectory_frenet[4::5,3] - self.feature_trajectory_frenet[:-4:5,3]) * self.sample_frequency/5.0
+            ego_lateral_speeds = self.feature_trajectory_frenet[:,5]
+            ego_lateral_accs = (ego_lateral_speeds[4::5]-ego_lateral_speeds[:-4:5])*self.sample_frequency/5.0
+            # ego_lateral_accs = (ego_lateral_speeds[1:] - ego_lateral_speeds[:-1]) * self.sample_frequency/5.0
+
+            # travel efficiency   
+            ego_efficiency = np.mean(np.abs(self.feature_trajectory_frenet[:,1]-self.road_averagespeed))
+            # print('*******************')
+            # print(f"ego_longitudial_jerks={ego_longitudial_jerks}")
+            # print(f"ego_longitudial_accs={ego_longitudial_accs}")
+            # print(f"ego_longitudial_speeds={ self.feature_trajectory_frenet[:,1]}")
+            # # print(f"self.feature_trajectory_frenet[1:,0] = {self.feature_trajectory_frenet[1:,0]}")
+            # print(f"ego_lateral_speeds={ego_lateral_speeds}")
+            # print(f"ego_lateral_accs={ego_lateral_accs}")
+            # print(f"yaw= {yaw}")
+
+            # comfort
+            ego_longitudial_acc_max = np.max(np.abs(ego_longitudial_accs))   
+            ego_lateral_acc = np.max(np.abs(ego_lateral_accs))
+            ego_longitudial_jerk = np.max(np.abs(ego_longitudial_jerks))
+
+ 
+
+            #TODO 这里的RP不是用sum求和，只用一个点的RP
+            if self.lane_id == 1:  # 0 means outside center trajectory, 1 means inside center trajectory
+                RP = ictad + 0.16*(2.17*(istlc) + 0.33*(ittc))
+            elif self.lane_id == 0: 
+                RP = ictlc + 0.08*(1.09*(istlc) + 0.45*(ittc))
+
+            #normalization
+            ego_efficiency = self.normalization(ego_efficiency,self.max_efficiency,0)
+            RP = self.normalization(RP,self.max_risk_perception,0)
+            ego_longitudial_acc_max = self.normalization(ego_longitudial_acc_max,self.max_max_longitudinal_acc,0)
+            ego_lateral_acc = self.normalization(ego_lateral_acc,self.max_lateral_acc,0)
+            ego_longitudial_jerk = self.normalization(ego_longitudial_jerk,self.max_longitudinal_jerk,0)
+
+            return ego_efficiency, ego_longitudial_acc_max, ego_lateral_acc, ego_longitudial_jerk, RP
+
+
+    def normalization(self,data,max,min):
+        data = (data-min)/(max-min)
+        return data
+    def calculate_frenet_coordinates(self, x, y, speed,yaw):
+        # 找到最近的参考点
+        nearest_index = self.find_nearest_point(x, y)
+        
+        # 获取最近点的坐标
+        cx = self.tx[nearest_index]
+        cy = self.ty[nearest_index]
+        
+        # 获取最近点的累积距离 s
+        s = 0.1 *nearest_index
+        
+        # 计算投影点到 (x, y) 的垂直距离 d
+        dx = x - cx
+        dy = y - cy
+        ds = dx * np.cos(self.tyaw[nearest_index]) + dy * np.sin(self.tyaw[nearest_index])
+        s = s + ds
+        d = -dx * np.sin(self.tyaw[nearest_index]) + dy * np.cos(self.tyaw[nearest_index])
+        # d = abs(-dx * np.sin(self.tyaw[nearest_index]) + dy * np.cos(self.tyaw[nearest_index]))
+        
+        c_speed = speed
+        c_accel = 0.0
+        c_d_d = 0.0
+        c_d_dd = 0.0
+        vector_speed = np.array([np.cos(yaw),np.sin(yaw)])*speed
+        vector_ref = [np.cos(self.tyaw[nearest_index]),np.sin(self.tyaw[nearest_index])]
+        s_dot = np.dot(vector_speed,vector_ref)
+        d_dot = np.cross(vector_ref,vector_speed).item()
+        
+        return s, c_speed, c_accel, d, s_dot,d_dot
+    
+    def find_nearest_point(self, x, y):
+        # 计算每个参考点到 (x, y) 的距离
+        distances = np.sqrt((np.array(self.tx) - x)**2 + (np.array(self.ty) - y)**2)
+        # 找到最近的参考点的索引
+        nearest_index = np.argmin(distances)
+        return nearest_index
+
+if __name__ == "__main__":
+    lane_id=1
+    trajectory_data_process = natural_road_data(lane_id)
+    ego_trajectory, road, obstacle_trajectory = trajectory_data_process.build_trajectory()
+    trajectory = ego_trajectory[:,0:3]    # array([x, y, speed, lane_id])
+    trajectory[:,2] = trajectory[:,2] / 3.6
+
+    obstacle_trajectory = obstacle_trajectory[:,0:3]   # array([x, y, speed, lane_id])
+    obstacle_trajectory[:,2] = obstacle_trajectory[:,2] / 3.6
+
+    road_left = road[:,0:2]
+    road_right = road[:,2:4]
+    road_center = road[:,4:]
+    ego_efficiencys=[]
+    ego_longitudial_acc_maxs=[]
+    ego_lateral_accs = []
+    ego_longitudial_jerks=[]
+    RPs = []
+    time1 = time.time()
+    Reward = Feature_calculator(road_left,road_right)
+    for i in range(trajectory.shape[0]):
+        ego_efficiency, ego_longitudial_acc_max, ego_lateral_acc, ego_longitudial_jerk, RP = Reward.feature(trajectory[i],obstacle_trajectory[i])
+        ego_efficiencys.append(ego_efficiency)
+        ego_longitudial_acc_maxs.append(ego_longitudial_acc_max)
+        ego_lateral_accs.append(ego_lateral_acc)
+        ego_longitudial_jerks.append(ego_longitudial_jerk)
+        RPs.append(RP)
+    time2 = time.time()
+    print(f"per point cost={(time2-time1)/trajectory.shape[0]}")
+
+    plt.figure(figsize=(10,6))
+    
+    ax = plt.axes()
+    ax.set_facecolor("grey")
+
+    plt.plot(road_left[:,0], road_left[:,1], 'w--', label='road')
+    plt.plot(road_center[:,0], road_center[:,1], 'w--')
+    plt.plot(road_right[:,0], road_right[:,1], 'w--')
+
+    plt.plot(trajectory[:,0], trajectory[:,1], color='lime')
+    plt.plot(obstacle_trajectory[:,0], obstacle_trajectory[:,1], color='lime')
+
+    plt.xlabel('Global X/m')
+    plt.ylabel('Global Y/m')
+
+    plt.legend()
+    plt.axis('equal')
+    plt.show()
+
+    # read for: trajectory, obstacle_trajectory, road_left, road_right
+    # ego_STLCs, ego_CTLCs, ego_CTTCs, ego_TADs = \
+    # risk_ind_cal(trajectory, obstacle_trajectory, road_left, road_right)
+
+    # STLC = np.exp(-min(ego_STLCs))  
+    # CTTC = np.exp(-min(ego_CTTCs)) 
+
+    # ### RP test ###
+    # iSTLC = 1.0/min(ego_STLCs)
+    # iCTLC = 1.0/min(ego_CTLCs)
+    # iTTC = 1.0/min(ego_CTTCs)
+    # iCTAD = 1.0/min(ego_TADs)
+    # if lane_id == 1:  # 0 means outside center trajectory, 1 means inside center trajectory
+    #     RP = iCTAD + 0.16*(2.17*iSTLC + 0.33*iTTC)
+    # elif lane_id == 0: 
+    #     RP = iCTLC + 0.08*(1.09*iSTLC + 0.45*iTTC)
+    # print(f"trajectory's RP={RP}")
+
+    x_axis = list(range(trajectory.shape[0]))
+    plt.figure(figsize=(10,6))
+    plt.plot(x_axis, ego_efficiencys)  # 这个看着稍微正常一点，后面出弯后是直线所以是 'inf'
+    plt.xlabel('trajectory index')
+    plt.ylabel('ego_efficiencys')
+    
+    plt.figure(figsize=(10,6))
+    plt.plot(x_axis, ego_longitudial_acc_maxs)  
+    plt.xlabel('trajectory index')
+    plt.ylabel('ego_longitudial_acc_maxs')
+
+    plt.figure(figsize=(10,6))
+    plt.plot(x_axis, ego_lateral_accs)  # 中间一小段是inf吗？ 应该是后面直线段是inf吧？为啥最后直线段反而那么小？？  index=605:836这部分是inf
+    plt.xlabel('trajectory index')
+    plt.ylabel('ego_lateral_accs')
+
+    plt.figure(figsize=(10,6))
+    plt.plot(x_axis, ego_longitudial_jerks)  # 中间好像是空缺了一段，是inf吗？
+    plt.xlabel('trajectory index')
+    plt.ylabel('ego_longitudial_jerks')
+
+    plt.figure(figsize=(10,6))
+    plt.plot(x_axis, RPs)   # 为什么e13这么大的数字？？？，不正常吧
+    plt.xlabel('trajectory index')
+    plt.ylabel('RPs')
+
+    curvature = curvature_cal(trajectory)
+    plt.figure(figsize=(10,6))
+    plt.plot(x_axis, curvature, label='curve range = 40')
+    plt.ylim(-8.5e-3, 1e-3)
+
+    plt.xlabel('trajectory point index')
+    plt.ylabel('curvatue')
+    plt.legend()
+
+    plt.show()
+
+
+
