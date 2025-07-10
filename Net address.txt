@@ -1,1 +1,2 @@
-https://js02.jposting.net/jtekt/u/referral/job.phtml
+sudo chrt -f 80 python3 write_to_kvaser.py
+sudo chrt -f 80 python3 read_from_kvaser.py
