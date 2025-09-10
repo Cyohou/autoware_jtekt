@@ -1,7 +1,4 @@
-讨论总览				1. 融合策略与取舍				
-你今天围绕“EKF 中 GNSS 与 INS/odometry 的融合策略”、OxTS 驱动输出、EKFLocalizer 的启动参数与核心代码逻辑，以及实际接入时两类输入话题的数据格式与门控策略展开。下面是完整、结构化的整理，涵盖融合模式的取舍、OxTS 输出与参考系、EKF 的数据流与关键参数、观测输入的格式要求、以及工程落地的风控与验证要点。				场景	做法	优点	风险/限制	适用条件
-融合策略与取舍				高频 odometry 拆分（优先）	/odometry.pose→pose_with_cov，/odometry.twist→twist_with_cov，协方差随 GNSS 质量动态调整	高频、低延迟、pose 与 twist 同源同步，EKF 稳定	GNSS 差时 odometry 会随基准漂移	设备有高频 INS 外推
-核心结论				提升 nav_sat_fix 率 + twist 融合	提高 GNSS 解算率至 5–10 Hz，低频 pose + 高频 twist	简单、信息真实	受硬件限制；需延迟补偿与协方差治理	GNSS 硬件支持高频输出
+
 低频绝对定位（GNSS fix/pose）+ 高频速度预测（odometry twist）是稳定基线：高频平滑来自预测；长期精度靠绝对锚定。				纯提频（不建议单用）	软件提高 fix 发布率	实现快	重复/插值，收益有限，可能放大延迟与噪声	无法提高硬件解算率时临时测试
 GNSS 全程优（RTK FIX 稳定、无遮挡、多路径极少、高频解算）时，odometry-only 的长期漂移风险很低，表现通常不比“fix+twist”差；但工程上保留低频硬锚定（GNSS pose/fix）几乎零成本、能覆盖稀有但代价高的退化场景。								
 若 fix 频率偏低或存在延迟/抖动，建议同时输入“软位姿”（odometry.pose，大协方差）与“硬位姿”（GNSS pose，小协方差），硬位姿到来即可“拉回”。								
