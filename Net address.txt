@@ -1,25 +1,4 @@
-
-pose+twist，高频 INS 外推	LRF（硬件/首帧/ENU）	GNSS 好时长期不漂，差时随基准漂移
-提升 nav_sat_fix 率 + twist 融合				/ins/imu	Imu	姿态、角速度、加速度	ENU/IMU frame	姿态来自 INS 解算
-做法：硬件支持下把 fix 率调至 5–10 Hz；EKF 用“低频 pose + 高频 twist”。				/ins/velocity	TwistStamped	INS 速度	INS frame	-
-优点：简单、信息真实。								
-限制：受硬件约束；仍需延迟补偿与协方差治理。								
-纯提频（不建议单用）				EKFLocalizer 启动配置				
-做法：仅软件加大发布率而无更高真实测量频率。				参数	作用	典型值/要求		
-问题：重复/插值信息，收益有限，可能放大延迟与噪声。				input_pose_with_cov_name	位姿观测输入话题	remap 到 /localization/pose_estimator/pose_with_covariance		
-OxTS ROS2 驱动与参考系				input_twist_with_cov_name	速度观测输入话题	remap 到 /localization/twist_estimator/twist_with_covariance		
-关键输出话题（前缀示例：/ins）				pose_frame_id	位姿观测 frame	map		
-绝对类				pose_additional_delay / twist_additional_delay	延迟补偿	GNSS 常 0.1–0.3 s		
-/ins/nav_sat_fix: WGS84 位置，协方差来自 EastAcc/NorthAcc/AltAcc。				pose_smoothing_steps / twist_smoothing_steps	平滑步数	pose 5，twist 2		
-/ins/nav_sat_ref: 本地参考原点（LRF）信息。				pose_gate_dist / twist_gate_dist	马氏距离门限	典型 10000.0（需调优）		
-融合/高频类				proc_stddev_yaw_c / vx_c / wz_c	过程噪声（连续）	yaw 0.005，vx 5.0，wz 1.0		
-/ins/odometry: 本地参考系下的 pose+twist，频率 50–200 Hz。				predict_frequency	EKF 主循环频率	50 Hz		
-Pose: GNSS 绝对解投影到 LRF + IMU 外推；GNSS 差时可能随基准漂移。				tf_rate	TF 发布频率	10 Hz		
-Twist: 来自 INS 解算的速度与角速度。								
-传感器原始类								
-/ins/imu, /ins/velocity, /ins/lever_arm, /ins/time_reference 等。				EKF 状态与数据流				
-LRF（本地参考系）来源				阶段	输入	处理	输出	
-硬件 LRF（推荐，重启不变，适合长期运行）				预测	上一状态 + twist	运动学模型预测（vx,wz）	预测状态 X_next	
+（vx,wz）	预测状态 X_next	
 首帧位置+航向				位姿更新	pose_with_cov	延迟补偿 → yaw 归一化 → 马氏距离门控 → updateWithDelay	修正 x,y,yaw	
 首帧位置 + ENU 对齐				速度更新	twist_with_cov	延迟补偿 → 马氏距离门控 → updateWithDelay	修正 vx,wz	
 建议：使用硬件 LRF，确保 map 原点固定与一致（避免重启漂移）。				发布	EKF 状态 + 协方差	组装 Pose/Twist/Odom/TF	/ekf_pose、/ekf_twist、/ekf_odom 等	
