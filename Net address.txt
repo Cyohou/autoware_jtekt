@@ -1,96 +1,52 @@
-定位链路（Localization Pipeline）	定位链路 GNSS/NDT 位姿 + Twist → EKF → /pose & /twist → /pose 用于感知结果从 base_link 转 map			
-节点名称	订阅话题	发布话题	作用	
-/localization/pose_estimator/ndt_scan_matcher	"/sensing/gnss/pose_with_covariance
-/map/pointcloud_map
-/localization/util/downsample/pointcloud
-/localization/pose_twist_fusion_filter/biased_pose_with_covariance"	"/localization/pose_estimator/pose
-/localization/pose_estimator/pose_with_covariance"	NDT 匹配，输出全局位姿	
-/localization/pose_twist_fusion_filter/ekf_localizer	"/initialpose3d
-/localization/pose_estimator/pose_with_covariance
-/localization/twist_estimator/twist_with_covariance"	"/localization/pose_twist_fusion_filter/pose
-/localization/pose_twist_fusion_filter/twist
-/localization/pose_twist_fusion_filter/twist_with_covariance
-/localization/pose_twist_fusion_filter/kinematic_state"	融合位姿与速度，输出自车全局状态	
-/pose_initializer/pose_initializer_node	"/sensing/gnss/pose_with_covariance
-/sensing/vehicle_velocity_converter/twist_with_covariance"	/initialpose3d<br>/localization/initialization_state	GNSS/用户输入初始位姿，触发 EKF 初始化	
-				
-速度链路（Twist Pipeline）	速度链路 /vehicle/status/velocity_status → /sensing/vehicle_velocity_converter/twist_with_covariance → /localization/twist_estimator/twist_with_covariance → EKF			
-节点名称	订阅话题	发布话题	作用	
-/vehicle_velocity_converter	/vehicle/status/velocity_status	/sensing/vehicle_velocity_converter/twist_with_covariance	将车辆 CAN 速度转换为 TwistWithCovariance	
-/localization/twist_estimator/gyro_odometer	/sensing/vehicle_velocity_converter/twist_with_covariance	"/localization/twist_estimator/twist_with_covariance
-/localization/twist_estimator/twist_with_covariance_raw"	根据车辆速度估计自车线速度和角速度	
-/localization/pose_twist_fusion_filter/stop_filter	"/localization/pose_twist_fusion_filter/kinematic_state
-/localization/pose_twist_fusion_filter/twist_with_covariance"	/localization/kinematic_state	停车状态检测与过滤	
-/localization/pose_twist_fusion_filter/twist2accel	"/localization/kinematic_state
-/localization/twist_estimator/twist_with_covariance"	/localization/acceleration	根据速度推导加速度	
-GNSS / INS 模块				
-节点名称	订阅话题	发布话题		
-GNSS 驱动（OXTS）	无需订阅（硬件驱动）	"/sensing/gnss/pose_with_covariance
-/sensing/gnss/pose
-/sensing/gnss/ins/odometry
-/sensing/gnss/ins/path
-/sensing/gnss/ins/imu
-/sensing/gnss/ins/nav_sat_fix
-/sensing/gnss/fixed"		
-				
-关键内容	优点	缺点/风险	建议	
-GNSS 数据源（OxTS）	硬件输出 NCOM（高频），oxts_ins 解算成 /nav_sat_fix、/odometry、/imu 等	高精度 RTK FIX 时可达 0.1–0.2 m；INS 航向稳定低速姿态	遮挡/多路径时跳变、延迟大；协方差需真实反映质量	提高 pub_nav_sat_fix_rate 至 5–10 Hz；监控 FIX/FLOAT、HDOP、age-of-corrections
-gnss_poser	将 /nav_sat_fix 转换到 map 系，融合姿态，输出 /sensing/gnss/pose(_with_covariance)	提供带协方差的全局位姿；frame_id=map	不做滤波，直接反映 GNSS 噪声；协方差不准会误导下游	确保协方差正确；必要时平滑或中值滤波
-NDT（无正则化）	点云匹配输出 /ndt_pose(_with_covariance)	特征丰富场景精度高，横纵向都稳定	特征稀缺时漂移甚至发散	在低特征场景启用正则化或切 GNSS-only
-NDT 正则化	在 NDT 代价函数加纵向约束项，基准来自 /sensing/gnss/pose_with_covariance	开阔场景可抑制纵向漂移；GNSS 好时纵向精度接近 GNSS	只约束纵向，横向/高度仍由 NDT 决定；NDT 横向失效时输出横向错误	在 EKF 层融合 GNSS 全向位姿，或改正则化逻辑约束 XY；低分数时切 GNSS-only
-正则化适用场景	桥梁、高速、农道等特征少但 GNSS 可用	GNSS 稳定时可长期锚定	GNSS 差时会被拉向错误位置	动态权重：基于 GNSS 质量调节约束强度
-输出到 /localization/pose_estimator	正则化后的 NDT 输出 remap 到 /localization/pose_estimator/pose(_with_covariance)	下游 EKF/控制可直接用	横向错误会直接传递	加质量门控：NDT 分数低时用 GNSS pose 替代
-				
-				
-核心结论		维度	GNSS-only 模式	NDT 正则化模式
-在 NDT 基本失效 场景下，开启正则化确实能让纵向跟随 GNSS，但横向仍可能错误。		主定位源	GNSS pose_with_covariance	NDT pose_with_covariance（纵向受 GNSS 约束）
-如果直接把这种输出作为 /localization/pose_estimator/pose，横向误差会传递到控制，存在风险。		横向精度	取决于 GNSS 精度（RTK FIX 可达 0.1–0.2 m）	取决于 NDT 匹配（特征弱时可能漂）
-		纵向精度	取决于 GNSS 精度	GNSS 锚定，通常较稳
-解决办法：		对地图依赖	无	有（需要点云地图）
-在 EKF 层融合 GNSS 全向位姿（而不是只用纵向约束）。		遮挡鲁棒性	差（GNSS 信号差时直接退化）	中（NDT 可短时撑住）
-或在 NDT 层改正则化逻辑，让它约束 XY。		实现复杂度	低（remap + EKF 融合）	高（需调 NDT 参数、正则化权重）
-或在 NDT 分数低时直接切换 GNSS-only 模式。				
-				
-				
-1. 融合策略与取舍				
-场景	做法	优点	风险/限制	
-高频 odometry 拆分（优先）	/odometry.pose→pose_with_cov，/odometry.twist→twist_with_cov，协方差随 GNSS 质量动态调整	高频、低延迟、pose 与 twist 同源同步，EKF 稳定	GNSS 差时 odometry 会随基准漂移	
-提升 nav_sat_fix 率 + twist 融合	提高 GNSS 解算率至 5–10 Hz，低频 pose + 高频 twist	简单、信息真实	受硬件限制；需延迟补偿与协方差治理	
-纯提频（不建议单用）	软件提高 fix 发布率	实现快	重复/插值，收益有限，可能放大延迟与噪声	
-				
-				
-OxTS ROS2 驱动关键输出				
-话题	类型	内容	参考系	
-/ins/nav_sat_fix	NavSatFix	WGS84 绝对位置，协方差来自 EastAcc/NorthAcc/AltAcc	WGS84	
-/ins/nav_sat_ref	NavSatRef	本地参考原点（LRF）	WGS84	
-/ins/odometry	Odometry	LRF 下 pose+twist，高频 INS 外推	LRF（硬件/首帧/ENU）	
-/ins/imu	Imu	姿态、角速度、加速度	ENU/IMU frame	
-/ins/velocity	TwistStamped	INS 速度	INS frame	
-				
-				
-EKFLocalizer 启动配置				
-参数	作用	典型值/要求		
-input_pose_with_cov_name	位姿观测输入话题	remap 到 /localization/pose_estimator/pose_with_covariance		
-input_twist_with_cov_name	速度观测输入话题	remap 到 /localization/twist_estimator/twist_with_covariance		
-pose_frame_id	位姿观测 frame	map		
-pose_additional_delay / twist_additional_delay	延迟补偿	GNSS 常 0.1–0.3 s		
-pose_smoothing_steps / twist_smoothing_steps	平滑步数	pose 5，twist 2		
-pose_gate_dist / twist_gate_dist	马氏距离门限	典型 10000.0（需调优）		
-proc_stddev_yaw_c / vx_c / wz_c	过程噪声（连续）	yaw 0.005，vx 5.0，wz 1.0		
-predict_frequency	EKF 主循环频率	50 Hz		
-tf_rate	TF 发布频率	10 Hz		
-				
-				
-EKF 状态与数据流				
-阶段	输入	处理	输出	
-预测	上一状态 + twist	运动学模型预测（vx,wz）	预测状态 X_next	
-位姿更新	pose_with_cov	延迟补偿 → yaw 归一化 → 马氏距离门控 → updateWithDelay	修正 x,y,yaw	
-速度更新	twist_with_cov	延迟补偿 → 马氏距离门控 → updateWithDelay	修正 vx,wz	
-发布	EKF 状态 + 协方差	组装 Pose/Twist/Odom/TF	/ekf_pose、/ekf_twist、/ekf_odom 等	
-				
-				
-输入话题数据格式要求				
-话题	类型	frame_id	必填字段	
-/localization/pose_estimator/pose_with_covariance	PoseWithCovarianceStamped	map（或配置值）	position.x/y/z，orientation（四元数）	
-/localization/twist_estimator/twist_with_covariance	TwistWithCovarianceStamped	base_link	linear.x（vx），angular.z（wz）	
-				
+1️⃣ GNSS Pose Passthrough（讨论最多）
+背景：你想让 GNSS/INS 的位姿直接进入 /localization/pose_estimator/pose_with_covariance，供 EKF 使用。
+
+问题发现：
+
+原 ndt_scan_matcher.launch.xml 用了 $(arg …)，Galactic XML 不支持，导致 substitution 报错。
+
+你原本写的 GNSS pose passthrough 参数没传到 Autoware 真正运行的节点，因为上层是通过 <include> 调用官方 launch。
+
+解决方案：
+
+采用 方案 B：直接在官方 ndt_scan_matcher.launch.xml 的 <node> 内硬加三行 <param>。
+
+保留 $(var …) 语法，确保 Galactic 能解析。
+
+确认上层 include 的是你改过的文件，并重新 build。
+
+验证结果：
+
+重新编译后，ros2 param get /localization/pose_estimator/ndt_scan_matcher gnss_pose_passthrough.enable 返回 true。
+
+说明 GNSS pose passthrough 已经生效，可以直接发布 GNSS 位姿到 EKF。
+
+2️⃣ GNSS Twist Passthrough（讨论较少）
+目标：让 GNSS/INS 的速度信息直接进入 /localization/twist_estimator/twist_with_covariance，供 EKF 使用。
+
+现状分析：
+
+该话题目前由 /localization/twist_estimator/gyro_odometer 发布，数据源是车轮速 + IMU。
+
+EKF 正在订阅它。
+
+方案选择：
+
+你选择在 gyro_odometer 内新增 GNSS twist passthrough 回调（订阅 /sensing/gnss/ins/odometry，提取 twist，封装成 TwistWithCovarianceStamped 并发布）。
+
+改造内容：
+
+修改 gyro_odometer_core.hpp：新增参数、订阅器、回调声明。
+
+修改 gyro_odometer_core.cpp：构造函数读取参数并创建 GNSS odometry 订阅，callbackGnssOdom 实现 GNSS twist 发布并更新内部缓存。
+
+修改 launch 文件：新增 <arg> 和 <param> 控制 GNSS passthrough 开关和输入话题。
+
+验证准备：
+
+还需确认节点真实名字（可能是 /localization/twist_estimator/gyro_odometer），用 ros2 node list 查找后再验证参数和话题。
+
+3️⃣ 最终目标
+Pose链路： GNSS → /localization/pose_estimator/pose_with_covariance → EKF （已打通并验证）
+
+Twist链路： GNSS → /localization/twist_estimator/twist_with_covariance → EKF （代码和 launch 已改好，待验证）
