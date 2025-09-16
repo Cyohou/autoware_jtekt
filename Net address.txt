@@ -1,52 +1,76 @@
-1️⃣ GNSS Pose Passthrough（讨论最多）
-背景：你想让 GNSS/INS 的位姿直接进入 /localization/pose_estimator/pose_with_covariance，供 EKF 使用。
+2️⃣ GNSS Twist Passthrough（后半段开始）
+目标：让 GNSS/INS 速度直接进入 /localization/twist_estimator/twist_with_covariance，供 EKF 使用。
 
-问题发现：
+现状：
 
-原 ndt_scan_matcher.launch.xml 用了 $(arg …)，Galactic XML 不支持，导致 substitution 报错。
+该话题原本由 gyro_odometer 发布，数据源是车轮速+IMU。
 
-你原本写的 GNSS pose passthrough 参数没传到 Autoware 真正运行的节点，因为上层是通过 <include> 调用官方 launch。
+改造：
 
-解决方案：
+在 gyro_odometer_core.hpp 加入：
 
-采用 方案 B：直接在官方 ndt_scan_matcher.launch.xml 的 <node> 内硬加三行 <param>。
+gnss_twist_passthrough.enable / gnss_twist_passthrough.input_topic 参数
 
-保留 $(var …) 语法，确保 Galactic 能解析。
+gnss_odom_sub_ 订阅器
 
-确认上层 include 的是你改过的文件，并重新 build。
+callbackGnssOdom 回调
 
-验证结果：
+在 gyro_odometer_core.cpp：
 
-重新编译后，ros2 param get /localization/pose_estimator/ndt_scan_matcher gnss_pose_passthrough.enable 返回 true。
+构造函数读取参数并订阅 GNSS odometry
 
-说明 GNSS pose passthrough 已经生效，可以直接发布 GNSS 位姿到 EKF。
+回调中提取 twist，封装成 TwistWithCovarianceStamped，发布到现有输出话题，并更新缓存
 
-2️⃣ GNSS Twist Passthrough（讨论较少）
-目标：让 GNSS/INS 的速度信息直接进入 /localization/twist_estimator/twist_with_covariance，供 EKF 使用。
+修改 launch 文件，新增 <arg> 和 <param> 控制开关和输入话题。
 
-现状分析：
+编译问题：
 
-该话题目前由 /localization/twist_estimator/gyro_odometer 发布，数据源是车轮速 + IMU。
+链接时报 undefined reference，原因是用到了 nav_msgs::msg::Odometry 却没在 CMakeLists.txt / package.xml 声明依赖。
 
-EKF 正在订阅它。
+解决：find_package(nav_msgs REQUIRED) + ament_target_dependencies(... nav_msgs)，并在 package.xml 加 <depend>nav_msgs</depend>。
 
-方案选择：
+3️⃣ 运行与验证 GNSS Twist
+节点名确认：/localization/twist_estimator/gyro_odometer。
 
-你选择在 gyro_odometer 内新增 GNSS twist passthrough 回调（订阅 /sensing/gnss/ins/odometry，提取 twist，封装成 TwistWithCovarianceStamped 并发布）。
+参数检查：ros2 param get ... gnss_twist_passthrough.enable 返回 true，说明开关生效。
 
-改造内容：
+数据对比：
 
-修改 gyro_odometer_core.hpp：新增参数、订阅器、回调声明。
+GNSS odometry linear.x 与 /localization/twist_estimator/twist_with_covariance 基本一致，说明线速度直通成功。
 
-修改 gyro_odometer_core.cpp：构造函数读取参数并创建 GNSS odometry 订阅，callbackGnssOdom 实现 GNSS twist 发布并更新内部缓存。
+角速度差异大 → 原因是 IMU 回调频率高，会覆盖 GNSS 回调的角速度。
 
-修改 launch 文件：新增 <arg> 和 <param> 控制 GNSS passthrough 开关和输入话题。
+改进建议：
 
-验证准备：
+GNSS-only 模式下屏蔽 IMU 回调对 twist_with_covariance 的发布，避免覆盖。
 
-还需确认节点真实名字（可能是 /localization/twist_estimator/gyro_odometer），用 ros2 node list 查找后再验证参数和话题。
+4️⃣ EKF 输出为 0 的排查
+现象：
 
-3️⃣ 最终目标
-Pose链路： GNSS → /localization/pose_estimator/pose_with_covariance → EKF （已打通并验证）
+/localization/twist_estimator/twist_with_covariance 有值
 
-Twist链路： GNSS → /localization/twist_estimator/twist_with_covariance → EKF （代码和 launch 已改好，待验证）
+/localization/pose_twist_fusion_filter/twist 全是 0
+
+原因分析：
+
+EKF 启动文件的 input_pose_with_cov_name / input_twist_with_cov_name 默认是占位符 in_pose_with_covariance / in_twist_with_covariance，没有 remap 到真实话题。
+
+结果 EKF 根本没订阅到你的 GNSS/IMU 速度输入。
+
+解决：
+
+在 EKF 启动文件中显式 remap：
+
+xml
+<arg name="input_pose_with_cov_name" default="/localization/pose_estimator/pose_with_covariance"/>
+<arg name="input_twist_with_cov_name" default="/localization/twist_estimator/twist_with_covariance"/>
+确认 EKF 收到数据后，速度输出就会恢复正常。
+
+5️⃣ 今天的关键收获
+GNSS pose passthrough 已打通并验证。
+
+GNSS twist passthrough 线速度已打通，角速度需屏蔽 IMU 覆盖才能完全直通。
+
+EKF 输出为 0 的根本原因是 输入话题 remap 错误，不是 GNSS passthrough 本身的问题。
+
+编译时新增消息类型必须在 CMake 和 package.xml 声明依赖，否则会链接失败。
