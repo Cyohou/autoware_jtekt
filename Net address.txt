@@ -1,76 +1,132 @@
-2️⃣ GNSS Twist Passthrough（后半段开始）
-目标：让 GNSS/INS 速度直接进入 /localization/twist_estimator/twist_with_covariance，供 EKF 使用。
+1. 背景
+arg 定义占位话题名:
 
-现状：
+<arg name="input_pose_with_cov_name" default="in_pose_with_covariance"/>
 
-该话题原本由 gyro_odometer 发布，数据源是车轮速+IMU。
+<arg name="input_twist_with_cov_name" default="in_twist_with_covariance"/>
 
-改造：
+通过 remap 使用 arg 值:
 
-在 gyro_odometer_core.hpp 加入：
+<remap from="in_pose_with_covariance" to="$(var input_pose_with_cov_name)"/>
 
-gnss_twist_passthrough.enable / gnss_twist_passthrough.input_topic 参数
+<remap from="in_twist_with_covariance" to ="$(var input_twist_with_cov_name)"/>
 
-gnss_odom_sub_ 订阅器
+结论: 真正的订阅话题由 arg 决定，而不是硬编码在 remap 的 to 值里（to 最终取自 arg）。
 
-callbackGnssOdom 回调
+2. 我们的尝试与验证过程
+第一步（确认实际订阅）:
 
-在 gyro_odometer_core.cpp：
+用 ros2 node info 查看 /ekf_localizer 订阅，看到是 in_pose_with_covariance 和 in_twist_with_covariance 这两个占位名。
 
-构造函数读取参数并订阅 GNSS odometry
+推断：如果 arg 没改，EKF 只会等这两个占位名。
 
-回调中提取 twist，封装成 TwistWithCovarianceStamped，发布到现有输出话题，并更新缓存
+第二步（用 arg 指向真实话题）:
 
-修改 launch 文件，新增 <arg> 和 <param> 控制开关和输入话题。
+启动时传参：
 
-编译问题：
+input_pose_with_cov_name:=/localization/pose_estimator/pose_with_covariance
 
-链接时报 undefined reference，原因是用到了 nav_msgs::msg::Odometry 却没在 CMakeLists.txt / package.xml 声明依赖。
+input_twist_with_cov_name:=/localization/twist_estimator/twist_with_covariance
 
-解决：find_package(nav_msgs REQUIRED) + ament_target_dependencies(... nav_msgs)，并在 package.xml 加 <depend>nav_msgs</depend>。
+remap 生效后，EKF 能直接收到 twist_estimator 的输出。
 
-3️⃣ 运行与验证 GNSS Twist
-节点名确认：/localization/twist_estimator/gyro_odometer。
+第三步（直接改默认值）:
 
-参数检查：ros2 param get ... gnss_twist_passthrough.enable 返回 true，说明开关生效。
+将 <arg default> 改成真实话题名，省去每次传参。
 
-数据对比：
+关键发现:
 
-GNSS odometry linear.x 与 /localization/twist_estimator/twist_with_covariance 基本一致，说明线速度直通成功。
+你环境中上层 launch/外部传参已经覆盖了这两个 arg，EKF 实际订阅早就是“真实话题”。因此修改 arg 默认值“不改变实际订阅结果”。
 
-角速度差异大 → 原因是 IMU 回调频率高，会覆盖 GNSS 回调的角速度。
+结论（关于 arg 和 remap）
+改与不改对结果无影响: 你的启动链路里，arg 已被上层覆盖为真实话题，所以 remap 已经正确接线。
 
-改进建议：
+问题不在 remap: 速度为 0 的根因不在“能不能接上”，而在“接上后被拒绝”：时间戳不同步、延迟超窗、协方差策略等。
 
-GNSS-only 模式下屏蔽 IMU 回调对 twist_with_covariance 的发布，避免覆盖。
+1) 初步排查：bag 与话题
+Bag 检查: bag 不包含 EKF 输出话题，排除“回放覆盖 EKF 输出”。
 
-4️⃣ EKF 输出为 0 的排查
-现象：
+观测现象: twist 话题有数据，但 EKF 输出 /twist 全 0，/debug 第二列（twist 创新）大多数为 0，偶尔出现较大负值。
 
-/localization/twist_estimator/twist_with_covariance 有值
+2) GyroOdometer 协方差问题
+源码行为: 将 linear.y / linear.z 的方差设为 10000（哨兵值，表示未观测）。
 
-/localization/pose_twist_fusion_filter/twist 全是 0
+影响: 在你的 EKF 配置下，容易导致整条 twist 被马氏距离 gate。
 
-原因分析：
+修正: 改为 100（大但有限），保留“不可信”语义但不至于直接触发拒绝。
 
-EKF 启动文件的 input_pose_with_cov_name / input_twist_with_cov_name 默认是占位符 in_pose_with_covariance / in_twist_with_covariance，没有 remap 到真实话题。
+3) GNSS/INS odometry 协方差全 0
+问题: /sensing/gnss/ins/odometry 的 twist 协方差全 0。
 
-结果 EKF 根本没订阅到你的 GNSS/IMU 速度输入。
+GyroOdometer 默认处理: vx=1.0，vy/vz=10000，wx/wy/wz=1.0。
 
-解决：
+修正方向: 用合理默认值，保证 vx/wz 有机会被 EKF 接受（结合上一步的 100）。
 
-在 EKF 启动文件中显式 remap：
+4) EKF 源码分析（关键机制）
+时间窗检查:
 
-xml
-<arg name="input_pose_with_cov_name" default="/localization/pose_estimator/pose_with_covariance"/>
-<arg name="input_twist_with_cov_name" default="/localization/twist_estimator/twist_with_covariance"/>
-确认 EKF 收到数据后，速度输出就会恢复正常。
+delay_time = (now − msg.stamp) + twist_additional_delay → delay_step
 
-5️⃣ 今天的关键收获
-GNSS pose passthrough 已打通并验证。
+若 delay_step > extend_state_step − 1，直接丢弃观测
 
-GNSS twist passthrough 线速度已打通，角速度需屏蔽 IMU 覆盖才能完全直通。
+你当前 50Hz × 50 步 ≈ 1 秒窗口，延迟 > 1s 的观测一律丢弃
 
-EKF 输出为 0 的根本原因是 输入话题 remap 错误，不是 GNSS passthrough 本身的问题。
+门限检查:
 
-编译时新增消息类型必须在 CMake 和 package.xml 声明依赖，否则会链接失败。
+twist 使用 2 维（vx,wz）马氏距离与 twist_gate_dist 比较，超限丢弃
+
+时钟基准:
+
+所有 now 都是 this->now()；若节点未统一 use_sim_time，延迟估计会失真
+
+5) 核心问题定位
+时间戳差异巨大: twist 消息的 header.stamp（1747…）与 EKF 当前时间（1758…）不在同一“时间域”，明确是时钟不同步。
+
+结果: 在 1 秒窗口下，大多数 twist 被时间窗检查丢弃；协方差改小后偶发通过，但难以形成持续融合。
+
+核心结论: 统一时钟与延迟窗口是“必要条件”，协方差/过程噪声是“充分条件”。
+
+6) 建议的解决方案
+统一时钟源:
+
+在 EKF、GyroOdometer、twist_estimator 全部设置 <param name="use_sim_time" value="true"/>
+
+回放 bag 时确保 /clock 正常发布
+
+放宽时间窗（验证期）:
+
+pose_measure_uncertainty_time: 0.2
+
+twist_additional_delay: 0.1
+
+extend_state_step: 200（50Hz ≈ 4 秒窗口）
+
+降低滞后（验证期）:
+
+twist_smoothing_steps: 1
+
+提高过程噪声（验证期）:
+
+proc_stddev_vx_c: 10.0
+
+proc_stddev_wz_c: 2.0
+
+明确 remap:
+
+in_pose_with_covariance → /localization/pose_estimator/pose_with_covariance
+
+in_twist_with_covariance → /localization/twist_estimator/twist_with_covariance -（这一步在你环境中早已生效，但保留为明确声明）
+
+7) 验收指标
+/debug（第二列）: 大部分时间非零且逐步下降
+
+/ekf_twist（vx）: 不再为 0，能随输入变化
+
+日志: 不再出现 “Twist delay exceeds the compensation limit”
+
+额外要点（你今天也做过/讨论过）
+arg/remap 的最终结论: 改默认值“没有意义”，因为上层 launch 已传入真实话题名；问题不在 wiring。
+
+GyroOdometer 补丁: 提供了可直接替换的完整代码版本（vy/vz=100，角速度协方差兜底为非零）。
+
+原因可视化建议: 在 measurementUpdateTwist 处打印 now、msg.stamp、delay_time/step/limit，做延迟分布巡检。
