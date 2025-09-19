@@ -1,132 +1,61 @@
-1. 背景
-arg 定义占位话题名:
+1. 发现问题
+一开始 /pose_twist_fusion_filter/twist 一直是 0，怀疑 EKF 没有融合 twist。
 
-<arg name="input_pose_with_cov_name" default="in_pose_with_covariance"/>
+检查 /sensing/gnss/oxts_ins use_sim_time，发现虽然可以设成 True，但 GNSS odometry 的时间戳依然是录包时的实时时间（1747…），和 /clock 仿真时间域（1758…）不一致。
 
-<arg name="input_twist_with_cov_name" default="in_twist_with_covariance"/>
+结论：时间域不一致 → EKF 延迟检查直接丢掉观测。
 
-通过 remap 使用 arg 值:
+2. 验证时间戳问题
+用 ros2 topic echo 对比 /sensing/gnss/ins/odometry 和 /clock，确认时间戳差了上千秒。
 
-<remap from="in_pose_with_covariance" to="$(var input_pose_with_cov_name)"/>
+明确了问题根源：GNSS 驱动直接用设备时间填 header.stamp，回放时不会自动变成仿真时间。
 
-<remap from="in_twist_with_covariance" to ="$(var input_twist_with_cov_name)"/>
+3. 制定修复方案
+决定先不改驱动源码，而是在回放链路中加一个时间戳重写节点（stamp_fixer）：
 
-结论: 真正的订阅话题由 arg 决定，而不是硬编码在 remap 的 to 值里（to 最终取自 arg）。
+订阅 /sensing/gnss/ins/odometry
 
-2. 我们的尝试与验证过程
-第一步（确认实际订阅）:
+用 now()（受 use_sim_time 控制）重写 header.stamp
 
-用 ros2 node info 查看 /ekf_localizer 订阅，看到是 in_pose_with_covariance 和 in_twist_with_covariance 这两个占位名。
+发布到新话题 /sensing/gnss/ins/odometry_fixed
 
-推断：如果 arg 没改，EKF 只会等这两个占位名。
+让 EKF 改订阅这个 _fixed 话题。
 
-第二步（用 arg 指向真实话题）:
+4. 应用修复并验证
+上线 stamp_fixer 后，/pose_twist_fusion_filter/twist 立刻恢复非零输出，速度和角速度随时间变化。
 
-启动时传参：
+验证 /debug 话题，确认 twist 创新量稳定非零 → EKF 已经在融合 twist。
 
-input_pose_with_cov_name:=/localization/pose_estimator/pose_with_covariance
+5. 发现新问题
+对比 /pose_estimator/pose_with_covariance（直线轨迹）和 /pose_twist_fusion_filter/pose（大范围数值 + 姿态乱转圈），发现两者位置数值域差距巨大。
 
-input_twist_with_cov_name:=/localization/twist_estimator/twist_with_covariance
+检查 TF，发现：
 
-remap 生效后，EKF 能直接收到 twist_estimator 的输出。
+map 帧缺失或不可用
 
-第三步（直接改默认值）:
+播放 bag 时 TF 时间戳是旧的（TF_OLD_DATA）
 
-将 <arg default> 改成真实话题名，省去每次传参。
+结论：坐标系不一致 + TF 不可用 → twist 方向被误解，姿态被拉偏。
 
-关键发现:
+6. 深入分析 GNSS passthrough
+GNSS passthrough 直接把 GNSS odometry 的 pose 发布到 /pose_estimator/pose_with_covariance，并强行改成 frame_id=map，但没有做实际坐标变换。
 
-你环境中上层 launch/外部传参已经覆盖了这两个 arg，EKF 实际订阅早就是“真实话题”。因此修改 arg 默认值“不改变实际订阅结果”。
+这条链路内部自洽，所以轨迹看起来正常，但它的“map”并不是真正的 Autoware map。
 
-结论（关于 arg 和 remap）
-改与不改对结果无影响: 你的启动链路里，arg 已被上层覆盖为真实话题，所以 remap 已经正确接线。
+7. 明确最终修复方向
+时间域：保持 stamp_fixer，确保所有观测在 /clock 时间域。
 
-问题不在 remap: 速度为 0 的根因不在“能不能接上”，而在“接上后被拒绝”：时间戳不同步、延迟超窗、协方差策略等。
+坐标系：
 
-1) 初步排查：bag 与话题
-Bag 检查: bag 不包含 EKF 输出话题，排除“回放覆盖 EKF 输出”。
+GNSS pose 要么通过 TF（map→gnss_map）对齐到地图，要么数值平移到地图数值域。
 
-观测现象: twist 话题有数据，但 EKF 输出 /twist 全 0，/debug 第二列（twist 创新）大多数为 0，偶尔出现较大负值。
+Twist 要转换到 base_link 坐标系（静态 TF 或旋转计算）。
 
-2) GyroOdometer 协方差问题
-源码行为: 将 linear.y / linear.z 的方差设为 10000（哨兵值，表示未观测）。
+TF 树：回放时屏蔽 bag 里的 /tf，自己发布静态 TF，保证树结构完整且无 TF_OLD_DATA。
 
-影响: 在你的 EKF 配置下，容易导致整条 twist 被马氏距离 gate。
+🎯 成果
+已经让 EKF 能融合 twist，速度输出恢复正常。
 
-修正: 改为 100（大但有限），保留“不可信”语义但不至于直接触发拒绝。
+明确了姿态乱转的根因：坐标系和 TF 不一致。
 
-3) GNSS/INS odometry 协方差全 0
-问题: /sensing/gnss/ins/odometry 的 twist 协方差全 0。
-
-GyroOdometer 默认处理: vx=1.0，vy/vz=10000，wx/wy/wz=1.0。
-
-修正方向: 用合理默认值，保证 vx/wz 有机会被 EKF 接受（结合上一步的 100）。
-
-4) EKF 源码分析（关键机制）
-时间窗检查:
-
-delay_time = (now − msg.stamp) + twist_additional_delay → delay_step
-
-若 delay_step > extend_state_step − 1，直接丢弃观测
-
-你当前 50Hz × 50 步 ≈ 1 秒窗口，延迟 > 1s 的观测一律丢弃
-
-门限检查:
-
-twist 使用 2 维（vx,wz）马氏距离与 twist_gate_dist 比较，超限丢弃
-
-时钟基准:
-
-所有 now 都是 this->now()；若节点未统一 use_sim_time，延迟估计会失真
-
-5) 核心问题定位
-时间戳差异巨大: twist 消息的 header.stamp（1747…）与 EKF 当前时间（1758…）不在同一“时间域”，明确是时钟不同步。
-
-结果: 在 1 秒窗口下，大多数 twist 被时间窗检查丢弃；协方差改小后偶发通过，但难以形成持续融合。
-
-核心结论: 统一时钟与延迟窗口是“必要条件”，协方差/过程噪声是“充分条件”。
-
-6) 建议的解决方案
-统一时钟源:
-
-在 EKF、GyroOdometer、twist_estimator 全部设置 <param name="use_sim_time" value="true"/>
-
-回放 bag 时确保 /clock 正常发布
-
-放宽时间窗（验证期）:
-
-pose_measure_uncertainty_time: 0.2
-
-twist_additional_delay: 0.1
-
-extend_state_step: 200（50Hz ≈ 4 秒窗口）
-
-降低滞后（验证期）:
-
-twist_smoothing_steps: 1
-
-提高过程噪声（验证期）:
-
-proc_stddev_vx_c: 10.0
-
-proc_stddev_wz_c: 2.0
-
-明确 remap:
-
-in_pose_with_covariance → /localization/pose_estimator/pose_with_covariance
-
-in_twist_with_covariance → /localization/twist_estimator/twist_with_covariance -（这一步在你环境中早已生效，但保留为明确声明）
-
-7) 验收指标
-/debug（第二列）: 大部分时间非零且逐步下降
-
-/ekf_twist（vx）: 不再为 0，能随输入变化
-
-日志: 不再出现 “Twist delay exceeds the compensation limit”
-
-额外要点（你今天也做过/讨论过）
-arg/remap 的最终结论: 改默认值“没有意义”，因为上层 launch 已传入真实话题名；问题不在 wiring。
-
-GyroOdometer 补丁: 提供了可直接替换的完整代码版本（vy/vz=100，角速度协方差兜底为非零）。
-
-原因可视化建议: 在 measurementUpdateTwist 处打印 now、msg.stamp、delay_time/step/limit，做延迟分布巡检。
+制定了完整的修复方案，下一步只要对齐坐标系 + 清理 TF，就能让 /pose_twist_fusion_filter/pose 和 /pose_estimator/pose_with_covariance 在同一数值域、轨迹平滑。
