@@ -1,274 +1,53 @@
-----------------------------------------------------------------------------------
-・	アルゴリズムの統合
-→　NDTの出力がないため、自車位置が更新できない（初期位置のままデータ表示）
-　　→　NDTの代わりにGNSSデータを使用することをautowareコード修正
-　　→　GNSSデータ記録・使用ロジック確認
-→　EKFにおけるGNSSとINS/odometryの融合方式整理
-　　→　GNSSとINS/odometryデータを用いて、EKFへの適用
-　　→　GNSS Pose Passthrough
-　　　→　GNSSの位置情報を /localization/pose_estimator/pose_with_covariance に直接流す構成を検討と実装
-→　launchファイルの構文制約により、パラメータが正しく伝播されない問題を確認。
-→　対応として、公式launch内に直接 <param> を追加し、再ビルドで反映を確認。
-→　ros2 param get により、機能が有効化されたことを検証済み。
-　　→　GNSS Twist Passthrough
-　　　→　GNSSの速度情報を /localization/twist_estimator/twist_with_covariance に流す構成を追加
-　　　→　既存の gyro_odometer にGNSS twistの受信・変換・発行処理を追加実装
-　　　→　launchファイルに制御用パラメータを追加し、構成切り替えを可能にした
-　　　→　ノード名とトピックの確認を通じて、動作検証を準備中
+### ROS2 TF 和时间戳问题整合总结
 
------------------------------------------------------------------------------------
-・	アルゴリズムの統合
-→　NDTの出力がないため、自車位置が更新できない（初期位置のままデータ表示）
-　　→　NDTの代わりにGNSSデータを使用することをautowareコード修正
-　　→　GNSSデータ記録・使用ロジック確認　→　完了
-→　EKFにおけるGNSSとINS/odometryの融合方式整理　→　完了
-　　→　GNSSとINS/odometryデータを用いて、EKFへの適用
-　　→　GNSS Pose Passthrough　→　完了
-　　→　GNSS Twist Passthrough　→　完了
-　　　→　GNSS/INSの速度情報を /localization/twist_estimator/twist_with_covariance に直接流す構成を検討・実装
-　　　→　既存の gyro_odometer ノードにGNSS twist passthrough機能を追加（パラメータ、購読、コールバック処理）。
-　　　→　GNSS odometryからtwistを抽出し、TwistWithCovarianceStampedとして既存トピックに発行。
-　　　→　launchファイルに <arg> / <param> を追加し、切り替え可能な構成にした
-　　　→　ビルド時に nav_msgs 依存を明示し、リンクエラーを解消。
-　　　→　ノード名とパラメータを確認し、Passthroughが有効化されたことを検証
-　　→　EKF出力ゼロの原因と対応
-　　　→　EKFの入力トピックが未remapで、GNSS/IMUの速度情報が未接続だったことが判明
-　　　→　input_pose_with_cov_name / input_twist_with_cov_name がデフォルトのプレースホルダーのまま
-　　　　→　launchファイルで明示的にremapを設定し、EKFが正しくデータを受信できるよう修正中
+#### 问题核心
+Autoware/ROS2系统中TF树连通性问题（map→base_link缺失）、时间戳不同步（导致ExtrapolationException、TF_OLD_DATA警告）、EKF未激活。主要原因：EKF未触发、旧时间戳、TF权威冲突、use_sim_time不一致、NDT对齐失败或孤立子树。目标是用GNSS代替NDT进行初始化，修复GnssModule和PoseInitializer以支持手动/自动触发。
 
------------------------------------------------------------------------------------
-・	アルゴリズムの統合
-→　NDTの出力がないため、自車位置が更新できない（初期位置のままデータ表示）
-　　→　NDTの代わりにGNSSデータを使用することをautowareコード修正
-　　→　GNSSデータ記録・使用ロジック確認　→　完了
-→　EKFにおけるGNSSとINS/odometryの融合方式整理　→　完了
-　　→　GNSSとINS/odometryデータを用いて、EKFへの適用
-　　→　GNSS Pose Passthrough　→　完了
-　　→　GNSS Twist Passthrough　→　完了
-　　→　EKF出力ゼロの原因と対応
-　　　→　remapとargの関係確認
-　　　　→　EKFの入力話題は <arg> で定義され、<remap> の to はその値を参照
-　　　　→　上位launchで既に実話題に置き換えられており、argのデフォルト値変更は影響なし
-　　　　→　結論：remapは正しく接続済み、問題は「接続後の拒否」にある
-　　　→　twistが拒否される原因分析
-　　　　→　GyroOdometerの協方差設定（vy/vz=10000）がgateの原因
-　　　　→　GNSS odometryのtwist協方差が全0 → EKFで拒否されやすい
-　　　　→　EKF内部では、時間遅延とマハラノビス距離で観測をフィルタリング
-　　　　→　twistのheader.stampとEKFの現在時刻が大きく乖離 → 時刻同期が必要と想定している
-　　　　　→　対策として
-　　　　　→　全ノードで use_sim_time=true を設定し、/clockで時刻統一
-　　　　　→　EKFの時間窓を拡張（extend_state_step=200）し、遅延許容を広げる
+#### 诊断要点
+1. **检查TF**：`ros2 topic info /tf -v`；`ros2 run tf2_tools view_frames`（确认无孤立子树）。
+2. **检查时间戳**：`ros2 topic echo /localization/pose_estimator/pose_with_covariance -n 1`（验证stamp接近now）。
+3. **检查EKF状态**：`ros2 topic echo /ekf_pose_with_covariance -n 1`；`ros2 lifecycle get /localization/pose_twist_fusion_filter/ekf_localizer`。
+4. **定位旧时间戳**：脚本监控话题stamp（输出/tmp/topic_stamp_monitor.log）；`ros2 topic echo /rosout | grep "1747978733\|1747978734"`。
+5. **检查use_sim_time**：`ros2 param get /localization/pose_twist_fusion_filter/ekf_localizer use_sim_time`。
 
------------------------------------------------------------------------------------
-・	アルゴリズムの統合
-→　NDTの出力がないため、自車位置が更新できない（初期位置のままデータ表示）
-　　→　NDTの代わりにGNSSデータを使用することをautowareコード修正
-　　→　GNSSデータ記録・使用ロジック確認　→　完了
-→　EKFにおけるGNSSとINS/odometryの融合方式整理　→　完了
-　　→　GNSSとINS/odometryデータを用いて、EKFへの適用
-　　→　GNSS Pose Passthrough　→　完了
-　　→　GNSS Twist Passthrough　→　完了
-　　→　EKF出力ゼロの原因と対応　→　完了
-　　　→　/pose_twist_fusion_filter/twist が常に 0 → EKF が twist を融合していない可能性に推測
-　　　　→　/sensing/gnss/oxts_ins に use_sim_time=true を設定しても、GNSS odometry の header.stamp は実時間（録包時） → /clock の仮想時間と不一致
-　　　　→　結論：時間域の不一致により EKF が twist 観測を遅延チェックで破棄
-　　　→　/sensing/gnss/ins/odometry と /clock を比較 → 時刻差が数百秒以上　→　GNSS ドライバがデバイス時刻を使用しており、回放時に自動変換されないことを確認
-　　　　→　ドライバは変更せず、stamp_fixer ノードを追加　→　GNSS odometry を購読 → now() で header.stamp を上書き → /odometry_fixed に再発行　→　EKF はこの _fixed 話題を購読
-　　　→　stamp_fixer 運用後、EKF の twist 出力が即時復帰　→　/debug の twist イノベーションも安定 　→ 　EKF が twist を正常に融合
-　　→　新たな問題の発見　→　取り込み中
-　　　　→　/pose_estimator/pose_with_covariance（直線）と /pose_twist_fusion_filter/pose（数値域が大きく、姿勢が回転）に差異がある
-　　　　→　TF チェック → map フレームが欠落、TF が古く TF_OLD_DATA エラー
-　　　　→　結論：座標系の不一致と TF の欠落により、姿勢が誤解釈されている
-　　　→　GNSS pose を frame_id=map に変更して /pose_estimator に発行しているが、実際の座標変換は行っていない
+#### 修复方案
+1. **激活EKF**：
+   - 发布/initialpose3d（示例命令见原文，covariance需36元素）。
+   - 调用服务：`ros2 service call /localization/pose_twist_fusion_filter/trigger_node std_srvs/srv/SetBool "{data: true}"`。
+   - 生命周期激活：`ros2 lifecycle set /localization/pose_twist_fusion_filter/ekf_localizer activate`。
+2. **临时修复**：
+   - 桥接TF：`ros2 run tf2_ros static_transform_publisher 0 0 0 0 0 0 1 ndt_base_link base_link`（仅调试）。
+   - 代码加fallback（try-catch，tf2::TimePointZero）。
+3. **根本修复**：
+   - 统一时间：rosbag用`--clock`；节点设`use_sim_time=true`；stamp用`this->now()`。
+   - 参数化TF：禁用GNSS覆盖map→base_link；用ndt_base_link。
+   - 工程化：自动initializer；监控脚本；strict/tolerant lookup。
+4. **GNSS初始化修复**：
+   - GnssModule：修正elapsed计算（now - stamp）；请求/返回pose的stamp设为now。
+   - PoseInitializer：新增auto_gnss_initialize参数，订阅gnss_pose_cov，自动触发/initialpose3d。
 
------------------------------------------------------------------------------------
-・	アルゴリズムの統合
-→　NDTの出力がないため、自車位置が更新できない（初期位置のままデータ表示）
-　　→　NDTの代わりにGNSSデータを使用することをautowareコード修正
-　　→　GNSSデータ記録・使用ロジック確認　→　完了
-→　EKFにおけるGNSSとINS/odometryの融合方式整理　→　完了
-　　→　GNSSとINS/odometryデータを用いて、EKFへの適用
-　　→　GNSS Pose Passthrough　→　完了
-　　→　GNSS Twist Passthrough　→　完了
-　　→　EKF出力ゼロの原因と対応　→　完了
-　　→　新たな問題の発見　→　取り込み中
-　　　→　/pose_estimator/pose_with_covariance（直線）と /pose_twist_fusion_filter/pose（数値域が大きく、姿勢が回転）に差異がある
-　　　→　時刻同期の問題　→　各Topicの時間は基本的にシステム時間に統一されているが、/tf に旧データが混在し、TF_OLD_DATA 警告の原因となっている
-　　　　　　　　　　　　　→　一部Topic（/sensing/gnss/ins/odometry_fixed, /twist_estimator）は bag 時間を使用している可能性がある
-　　　　　　　　　　　　　→　全ノードで use_sim_time=false を設定し、システム時間に統一、bag 再生時に /tf をフィルタリングし、古い TF を除去
-　　　→　座標系の不一致　→　 /pose_twist_fusion_filter/pose は UTM 座標（x: 4053〜4055, y: 57973〜57976）を使用。 
-/pose_estimator/pose_with_covariance は局所座標（x: 43〜45, y: 37〜38）で出力。 
- /tf の map→base_link に異常座標（x: 約8.5e22）が含まれ、EKF 出力に影響。
-　　　→　TF の影響　→　EKF が /pose_estimator と /twist_estimator の融合結果として map→base_link を出力しているが、入力座標系の不一致により異常値が発生
-　　　　　　　　　　  →　/tf に旧データが残っており、TF キャッシュの干渉が疑われる
+#### 验证方法
+1. 检查/tf和frames.pdf。
+2. 验证GNSS/EKF话题输出。
+3. 发布initialpose3d并触发EKF。
+4. 确认/rosout无extrapolation警告（`ros2 topic echo /rosout | grep -i extrapolation`）。
 
------------------------------------------------------------------------------------
-・	アルゴリズムの統合
-→　NDTの出力がないため、自車位置が更新できない（初期位置のままデータ表示）
-　　→　NDTの代わりにGNSSデータを使用することをautowareコード修正
-　　→　GNSSデータ記録・使用ロジック確認　→　完了
-→　EKFにおけるGNSSとINS/odometryの融合方式整理　→　完了
-　　→　GNSSとINS/odometryデータを用いて、EKFへの適用
-　　→　GNSS Pose Passthrough　→　完了
-　　→　GNSS Twist Passthrough　→　完了
-　　→　EKF出力ゼロの原因と対応　→　完了
-　　→　新たな問題の発見　→　取り込み中
-　　　→　/pose_estimator/pose_with_covariance（直線）と /pose_twist_fusion_filter/pose（数値域が大きく、姿勢が回転）に差異がある
-　　　→　座標系の不一致　→　 /pose_twist_fusion_filter/pose は UTM 座標（x: 4053〜4055, y: 57973〜57976）を使用。 
-/pose_estimator/pose_with_covariance は局所座標（x: 43〜45, y: 37〜38）で出力。 
- /tf の map→base_link に異常座標（x: 約8.5e22）が含まれ、localization機能しない時のみ。
-　　　　　　　　　　　　　→　gyro_odometer_core.cpp の未完成部分を一括補完し、GNSS twist passthrough の TF 処理と協調変数防御を強化
-　　　　　　　　　　　　　→　ndt_scan_matcher_core.cpp のコンパイルエラー（未定義の tf2_buffer_、std::max の型衝突）を修正し、GNSS passthrough に TF 失敗時の防御処理を追加
-　　　→　TF の影響　→　EKF が /pose_estimator と /twist_estimator の融合結果として map→base_link を出力しているが、入力座標系の不一致により異常値が発生
-　　　　　　　　　　  →　ros2 topic echo/info/node list 等を用いて /tf の発行元と数値を確認。 
-→　/tf に正常な地図座標と異常値が混在していることを確認。
-→　GNSS passthrough や NDT passthrough が TF lookup 失敗時に frame_id=map を強制設定し、未変換座標を発行している可能性。
-→　/tf の異常値は GNSS/NDT passthrough の例外処理や座標系誤設定に起因
-　→　find_bad_tf.sh 実行 → 異常 TF の発行元を特定
+#### 已完成/未解决问题
+- **已完成**：修复GnssModule时间逻辑；修正covariance格式；实现auto_gnss_initialize初版；提供临时脚本激活localization。
+- **未解决**：/localization/initialize因ndt_align失败（code=4）；auto_gnss_initialize运行时行为未验证。
 
-总结下
-Copilot said:
-Copilot
+#### 关键命令
+- **服务检查**：`ros2 service list | grep initialize`；`ros2 service type /localization/initialize`。
+- **手动初始化**：`ros2 service call /localization/initialize autoware_adapi_v1_msgs/srv/InitializeLocalization "{pose: []}"`；发布/initialpose3d（见原文）。
+- **构建**：`colcon build --packages-select pose_initializer`；`source install/setup.bash`。
 
-9に対する推論
+#### 后续建议（优先级）
+1. **验证auto_gnss_initialize**：设gnss_enabled=true, ndt_enabled=false, auto_gnss_initialize=true；反馈/initialpose3d、/localization/initialization_state、/rosout输出。
+2. **禁用NDT对齐**：修改on_initialize，仅ndt_enabled=true时调用ndt_->align_pose；确保launch中ndt_enabled=false。
+3. **增强健壮性**：在on_gnss_received加时间/covariance检查；增加日志/metrics；支持allow_gnss_when_ndt_enabled参数。
 
-整理と構成案の作成
-
-ベストプラクティスの提案と進捗整理
-
-GNSS通過処理のアーキテクチャ提案と進捗整理
-下面把你这几轮“算法统合（Autoware Localization/EKF）”的推进过程，按问题→原因→处理→现状/下一步梳理成一页总结，并附上建议的落地步骤、核对清单、示例配置，便于你后续一次性扫清隐患。
-
-1) 总体里程碑（已完成 ✅）
-替代 NDT：GNSS 接管
-
-将 NDT 无输出时的定位链路改为以 GNSS 为主，完成 GNSS Pose Passthrough 与 GNSS Twist Passthrough。
-在 gyro_odometer 中加入对 GNSS twist 的订阅/转换/发布与参数控制，补上 TF 相关处理与容错。
-修复 ndt_scan_matcher_core.cpp 编译与 TF 异常路径的防御逻辑。
-EKF 融合
-
-梳理并实现 GNSS + INS/Odometry 的 EKF 融合方案。
-解决 EKF 输出为零 的根因（输入话题未 remap / 仍为占位名），在 launch 中正确配置 <remap> 与 <param>，用 ros2 param get 验证生效。
-时间戳与观测拒绝
-
-定位 EKF 拒绝 twist 的多重原因：
-twist 协方差不合理（GNSS 为全 0；GyroOdometer vy/vz=10000 过大触发 gate）。
-时间戳域不一致（bag/设备时钟 vs /clock/系统时钟），导致 EKF 以延迟检查丢弃观测。
-先尝试 use_sim_time 与 EKF 时间窗扩展（extend_state_step=200），最终用 stamp_fixer 节点将 GNSS odometry 的 header.stamp 统一为当前时钟域（now()），EKF 立刻恢复融合输出，/debug 的创新量稳定。
-TF/坐标系问题暴露
-
-发现 /pose_twist_fusion_filter/pose（UTM 数域）与 /pose_estimator/pose_with_covariance（局部坐标）不一致。
-发现 /tf 混入旧数据（TF_OLD_DATA）与异常 map→base_link 大值（~8.5e22，仅在 localization 不工作时出现）。
-结合脚本 find_bad_tf.sh 确认存在异常 TF 发布源；推断 GNSS/NDT passthrough 在 TF 查询失败时强制 frame_id=map 而未做实际变换，把未转换的数据“贴标签”导致 /tf 污染。
-2) 关键问题闭环
-Q1. EKF 输出为 0
-原因：EKF 输入话题未正确 remap；仍是默认占位名；上层 launch 的 <arg> 替换并不影响底层已完成的 remap 连接。
-处理：在实际 launch 中显式 <remap> 到真实话题；用 ros2 param get / ros2 topic info 验证连接。
-状态：✅ 已解决。
-Q2. Twist 被 EKF 丢弃
-原因（并发）：
-GNSS odometry 的 twist 协方差为 全 0；GyroOdometer 设定 vy/vz=10000 过大→马氏门限易拒绝。
-时间戳域不一致（设备/录包时间 vs /clock/系统时间）。
-处理：
-为 GNSS twist 注入合理的非零协方差（至少对角线小正数），并收敛 GyroOdometer 的协方差（不把 vy/vz 设得过大）。
-引入 stamp_fixer 将 GNSS odometry 的 stamp 统一到 EKF 时钟域。
-必要时适度放宽 EKF 时间/创新门限（如延长窗口、合理马氏距离阈值）。
-状态：✅ EKF twist 融合已恢复。
-Q3. 坐标系与 TF 异常
-现象：
-/pose_twist_fusion_filter/pose 为 UTM 大数；/pose_estimator/pose_with_covariance 为局部小数；两者数域与姿态差异明显。
-/tf 混入旧数据（TF_OLD_DATA），且在 localization 不工作时出现异常的 map→base_link 巨大数值。
-根因：
-未进行真实坐标变换而强行设置 frame_id=map（passthrough 的降级路径）。
-/tf 缓存中有旧/异源数据混入（回放时钟与消息时戳不一致）。
-处理：
-禁止在 TF 查询失败时“强贴标签”；若 transform 不可用，应 降级：不发布 / 标记 invalid / 发布至隔离话题，或明确 frame_id=gnss_utm 等，避免污染 map 链。
-清理 TF 发布路径，定位并停止异常发布源（已用 find_bad_tf.sh）。
-统一时钟策略，避免 /tf 混入旧数据。
-状态：🔧 已定位；代码防御与发布策略已增强，但仍需统一坐标系与 TF 链路的最终定版。
-3) 建议的落地方案（一步到位）
-A. 时间策略先定调
-回放为主：建议统一为 系统时钟（use_sim_time=false），让所有节点使用同一时间域；回放 bag 时不要再注入 /clock，或确保全系统一致。
-若必须用 /clock：所有节点均 use_sim_time=true，并确保 stamp_fixer 使用同一 /clock 域（now() 即为仿真时间）。
-B. GNSS → map 的正规化路径
-不要把 GNSS/UTM 数据直接 frame_id=map。
-规范 TF 链：map -> odom -> base_link（或 Autoware 的 map -> base_link 直连，二选一但全程一致）。
-选项 1（推荐）：保持 map 为全局/静态地图坐标，为 GNSS 建立明确转换节点：
-LLA/UTM → ENU(map)：以固定原点（地图基点）建立 ENU 局部坐标；可用 GeographicLib/已有 GNSS projector；输出 frame_id=map 的已变换 Pose。
-无可用 TF 时：暂停发布到 /pose_estimator，或发布到隔离话题（例如 /pose_estimator_untransformed）。
-选项 2（过渡）：保留 frame_id=gnss_utm，并用静态变换（或运行时变换）建立 map <- gnss_utm，直到地图基点与投影一致后再切换到选项 1。
-C. EKF 观测协方差与门限
-给 GNSS twist/pose 设置非零、合理协方差（示例）：
-低速城市：twist_cov.diag = [0.2, 0.5, 1.0, 0.1, 0.1, 0.5]（单位按 m/s, rad/s）；根据设备规格微调。
-GNSS pose：平面方向比高度小；如平面 0.5^2，高度 2.0^2。
-收敛 GyroOdometer 的协方差，不要用极大值“拒绝”Y/Z 侧向。
-EKF 参数：适度放宽延迟容忍（你已调大 extend_state_step），并确认马氏距离门限与输入协方差匹配。
-D. 发布与降级规则
-TF 查询失败时：
-不要发布“伪 map”坐标；改为不发布或发布到隔离话题（带明确 frame）。
-在日志中显式记录降级（速查问题来源）。
-清理 TF 污染：
-bag 回放时过滤旧 TF；或写一个小过滤节点，仅转发 stamp ≥ (now - Δ) 的 TF。
-确保系统内 唯一 map→base_link 发布源（避免竞态）。
-4) 示例：launch 片段（remap/参数/降级防御）
-
-
-
-XML
-<!-- EKF 输入 remap（按你的真实话题名） -->
-<node pkg="...ekf_pkg..." exec="pose_twist_fusion_filter" name="pose_twist_fusion_filter">
-  <remap from="input/pose_with_covariance" to="/localization/pose_estimator/pose_with_covariance"/>
-  <remap from="input/twist_with_covariance" to="/localization/twist_estimator/twist_with_covariance"/>
-  <!-- 时间/门限参数（示例） -->
-  <param name="use_mah_outlier_rejection" value="true"/>
-  <param name="mahalanobis_threshold_twist" value="5.0"/>
-  <param name="extend_state_step" value="200"/>
-</node>
-
-<!-- GNSS twist passthrough 控制 -->
-<node pkg="...localization..." exec="gyro_odometer" name="gyro_odometer">
-  <param name="enable_gnss_twist_passthrough" value="true"/>
-  <remap from="input/gnss/odometry" to="/sensing/gnss/ins/odometry_fixed"/>
-  <remap from="output/twist_with_covariance" to="/localization/twist_estimator/twist_with_covariance"/>
-  <!-- 不要在 TF 失败时强贴 map；失败则不发布 / 或发到隔离话题 -->
-  <param name="drop_on_tf_failure" value="true"/>
-</node>
-
-<!-- stamp_fixer（同一时钟域） -->
-<node pkg="...tools..." exec="stamp_fixer" name="stamp_fixer">
-  <remap from="input/odometry" to="/sensing/gnss/ins/odometry"/>
-  <remap from="output/odometry" to="/sensing/gnss/ins/odometry_fixed"/>
-  <param name="use_sim_time" value="false"/>
-</node>
-
-
-その他の行を表示する
-提示：如果必须用 /clock，把上面三个节点的 use_sim_time 统一为 true，并确保 bag 播放提供的 /clock 是单一来源。
-
-5) 快速核对清单（上线前 5 分钟）
-时钟统一
-
-ros2 param get /<any_node> use_sim_time 一致。
-ros2 topic echo /clock（使用 /clock 时）单源、单调递增。
-输入链路
-
-ros2 topic info /localization/pose_estimator/pose_with_covariance（频率/类型正确）。
-ros2 topic info /localization/twist_estimator/twist_with_covariance。
-ros2 topic echo -n1 检查两者 header.stamp 是否在同一时域、无大滞后。
-EKF 融合状态
-
-ros2 topic hz /pose_twist_fusion_filter/pose 稳定。
-/pose_twist_fusion_filter/debug/* 创新量无持续饱和/NaN。
-TF 健康
-
-ros2 run tf2_tools view_frames 或 rqt_tf_tree：单一 map -> (odom) -> base_link 路径，无分叉。
-ros2 run tf2_ros tf2_echo map base_link 数值连续、无巨量跳变。
-观察 /tf 是否仍有历史帧（TF_OLD_DATA 警告消失）。
-异常源清查
-
-运行你的 find_bad_tf.sh，确保无多源 map→base_link。
-搜索代码：确认所有 passthrough 路径不在 TF 失败时强贴 frame_id=map。
-6) 当前状态结论
-GNSS Pose/Twist Passthrough 已完成，EKF twist 融合已恢复（时间戳与协方差问题已闭环）。
-剩余主要矛盾集中在坐标系统一与 TF 链路纯净：UTM 与局部坐标混用、历史 TF 混入、TF 查询失败时的不当降级发布，是导致 /pose_estimator 与 /pose_twist_fusion_filter 分歧以及“8.5e22”异常值的根因。
-按上面“落地方案 A–D”调整后，应能让 EKF 的 pose 与 pose_estimator 在同一数域/同一 frame内收敛一致，彻底消除 TF_OLD_DATA 和异常值。
+#### 具体任务选择
+请选一项：
+1. 验证auto_gnss_initialize：提供topic/log输出，我定位问题并给补丁。
+2. 生成diff跳过NDT对齐（强制GNSS-only），提供git apply + build命令。
+3. 提供一行脚本（GNSS->initialpose->trigger）供临时恢复。
