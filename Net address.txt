@@ -1,191 +1,24 @@
-问题背景
-你在 Autoware 中使用 /localization/pose_twist_fusion_filter/ekf_localizer。
-
-EKF 经常报错：
-
-コード
-[EKF] current_ekf_pose_ out of bounds or non-finite, disabling EKF TF publish
-导致 TF 停止发布，定位链路崩溃。
-
-🔎 已确认的情况
-EKF 订阅输入
-
-/initialpose3d
-
-/localization/pose_estimator/pose_with_covariance
-
-/localization/twist_estimator/twist_with_covariance
-
-消息检查
-
-你贴出的 pose 与 initialpose3d 消息：对角协方差均为正，非对角虽有负值但合理。
-
-没有 NaN/Inf，数值正常。
-
-所以协方差本身不是直接污染源。
-
-EKF 节点服务
-
-确认存在 /localization/pose_twist_fusion_filter/trigger_node 可用于停启 EKF。
-
-之前调用错误的服务名导致“waiting for service”，现已确认正确服务。
-
-EKF 日志
-
-报出极大数值（x≈10^12 甚至更大），说明 EKF 状态被污染。
-
-这类数值通常来自：
-
-输入消息中偶发的极端值或 NaN/Inf
-
-时间/TF 不一致导致外推失败
-
-问题现象
-EKF 在运行过程中，第一次融合非零 twist 时，orientation 出现 NaN，导致 EKF 输出 pose 爆炸成天文数字。
-
-日志中出现 [EKF] current_ekf_pose_ out of bounds or non-finite。
-
-通过 rosbag 回放时，/pose、/twist 输入数据本身正常，但 EKF 输出突然失效。
-
-二、逐层分析
-1. 输入层（gyro_odometer）
-负责将 IMU、车辆 twist、GNSS odometry 转换为 /twist_with_covariance。
-
-问题：
-
-有时输入的 covariance 为 0 或负数。
-
-如果直接传给 EKF，会导致数值不稳定。
-
-解决：
-
-使用 guard_positive 等函数强制替换非法协方差。
-
-增加 NaN/Inf 检查，丢弃非法输入。
-
-2. EKF 内部（ekf_localizer）
-负责融合 pose 与 twist，输出最终的 /pose、/twist。
-
-问题：
-
-四元数更新时没有强制归一化，浮点误差累积后可能直接 NaN。
-
-过程噪声参数过小，EKF 过度相信 twist，导致发散。
-
-解决：
-
-在 predictKinematicsModel 和 measurementUpdateTwist 后强制四元数归一化。
-
-更新后检查状态向量 X 是否包含 NaN/Inf，若有则丢弃该次更新。
-
-调整参数：
-
-proc_stddev_vx_c、proc_stddev_wz_c、proc_stddev_yaw_c 适当调大，避免过度收敛。
-
-3. 初始化（pose_initializer）
-负责发布 /initialpose3d，触发 EKF 初始化。
-
-问题：
-
-输出的 covariance 与 EKF 内部预期不一致，可能导致初始化后不稳定。
-
-解决：
-
-保证输出 covariance 与 EKF 初始化矩阵 P 一致，尤其是 yaw 的不确定度要足够大。
-
-如果使用 GNSS 自动初始化，确保时间戳和 frame_id 与 EKF 一致。
-
-
-解决：
-
-如果 TF 查找失败，应丢弃该帧，而不是强行改 frame_id。
-
-5. 运行时保护
-EKF 在 timerTFCallback 中已经有位置越界检查。
-
-需要进一步增加：
-
-orientation 的有限性检查。
-
-一旦检测到 NaN/Inf，立即停掉 EKF，等待重新初始化。
-
-三、总结
-要解决 EKF 爆炸的问题，需要从三个方面入手：
-
-输入层过滤：gyro_odometer 严格检查并修正非法协方差、NaN/Inf。
-
-EKF 内部防护：四元数归一化 + NaN 检查 + 合理的过程噪声参数。
-
-初始化与外部模块一致性：pose_initializer 输出的 covariance 与 EKF 预期一致，ndt_scan_matcher 的 GNSS passthrough 严格处理 TF。
-
-✅ 一句话总结： EKF 爆炸的根因是 数值稳定性不足 + 输入数据质量不一致。解决方案是 输入端过滤、EKF 内部归一化与检查、初始化与外部模块参数一致，三方面同时加强，才能彻底避免 NaN 和发散。
-
-
-现在主要是有三个问题  一是节点收到一条 GNSS odometry，其 twist.covariance 被判定为“无效”（全 0 或含负值），节点用内置的 fallback covariance 替换后继续发布  二是EKF 收到的输入导致滤波器状态变得非有限或远超合理范围，EKF 选择停止发布 map→base_link TF   [ekf_localizer-36] [ERROR] [1760661276.538198715] [localization.pose_twist_fusion_filter.ekf_localizer]: [EKF] current_ekf_pose_ out of bounds or non-finite, disabling EKF TF publish (x=831543937623245078697276176866098544640.000000 y=1627610247085172844280358768161637531648.000000 z=-0.015023) 三是Requested time 1760086729.096262 but the latest data is at time 1760086728.84710
-
-
-一是节点收到一条 GNSS odometry，其 twist.covariance 被判定为“无效”（全 0 或含负值），节点用内置的 fallback covariance 替换后继续发布
-二是EKF 收到的输入导致滤波器状态变得非有限或远超合理范围，EKF 选择停止发布 map→base_link TF 
-
-为什么全零协方差会导致 EKF 崩溃（要点）
-EKF 的观测更新需要反演观测协方差矩阵 R 或用其在卡尔曼增益计算里；全零或奇异的 R 导致矩阵求逆数值不稳定或 NaN。
-当 R 为零（或数值极小）时，相当于“无限信任”该观测，单个异常观测会把状态拉到极端值并造成数值发散。
-进一步后果：状态或协方差含 NaN/Inf → 由此计算出来的四元数或位置变为非有限 → tf2 拒绝变换并在 timerTFCallback 中被检测到并禁用广播（你日志中的“orientation non-finite”正是这一点）。
-
-1. /initialpose3d
-初始位姿在 (0.63, 0.0013, -0.0083)，orientation 正常，协方差矩阵合理。
-说明 EKF 的初始化输入是健康的。
-2. /localization/pose_twist_fusion_filter/pose
-在 1760086728.642–0.847 秒之间，pose 一直稳定在 (0.63, 0.0013) 附近，orientation 正常。
-但在 1760086728.862 秒，position 跳到 (0.81, 0.0020, -0.0139)，orientation 直接变成 .nan。
-这就是 EKF 日志里报的 “orientation non-finite” 的直接来源。
-3. /localization/pose_twist_fusion_filter/twist
-在 1760086728.642–0.847 秒之间，twist 全部为零。
-到 1760086728.862 秒，突然出现 linear.x=1.15 m/s, angular.z=0.067 rad/s。
-这说明 twist 在这一帧才开始有非零值。
-4. /localization/pose_twist_fusion_filter/twist_with_covariance
-前几帧 twist 全零，但 covariance 在逐渐增加（0.05 → 0.47）。
-到 1760086728.862 秒，twist 出现非零值（1.15 m/s），covariance 也正常（0.08, 0.018）。
-没有出现负数，说明 twist_with_covariance 本身是健康的。
-5. /localization/pose_twist_fusion_filter/kinematic_state
-pose 与 twist 的融合状态在前几帧正常，协方差矩阵数值也合理（1.000x）。
-但在 1760086728.862 秒，pose.position 跳到 (0.81, 0.0020)，orientation 全部是 NaN。
-同时 twist.linear.x=1.15，angular.z=0.067。
-说明 EKF 在这一帧融合 twist 时，内部状态矩阵更新失败，导致 orientation 计算出 NaN。
-🔎 归纳原因
-触发点：在 1760086728.862 秒，EKF 第一次融合非零 twist。
-结果：状态更新时，orientation 计算出 NaN，导致 EKF 输出非法 pose。
-根因：
-EKF 内部的四元数更新逻辑在处理小初始姿态 + 非零角速度时数值不稳定。
-或者输入 twist 的协方差矩阵与姿态更新公式不匹配，导致归一化失败。
-这不是时间基准问题，而是 EKF 内部数值稳定性问题。
-✅ 结论
-问题不是初始化 pose 错误，也不是输入 twist 数据本身异常。
-真正的原因是 EKF 在第一次融合非零 twist 时，orientation 更新出 NaN。
-这说明 EKF 的姿态更新公式需要增加保护：
-在更新后强制归一化四元数；
-检查是否出现 NaN/Inf，如果有则丢弃该次更新；
-或者在 twist 协方差过小/过大时，调整参数避免数值爆炸。
-
-
-为什么会出现 NaN
-EKF 在更新姿态时，需要用 四元数 来表示方向。
-四元数的数学要求是：长度必须等于 1（单位四元数）。
-当第一次融合 twist（角速度）时，EKF 会用角速度去“旋转”这个四元数。
-如果计算过程中数值有点偏差（比如浮点误差、协方差过小导致增益过大），四元数的长度就不再是 1。
-一旦长度偏离太多，再做归一化或三角函数运算时，就可能算出 NaN。
-2. 为什么要“归一化”和“NaN 检查”
-归一化：就是把四元数重新拉回到长度=1。这样即使有小的数值误差，也能保证它还是一个合法的方向。
-NaN 检查：就是在更新完之后，先看一眼结果是不是 NaN/Inf。如果是，就丢掉这次更新，不让错误扩散。
-这两个动作就像“安全网”，防止一次小错误把整个 EKF 炸掉。
-3. 为什么要调整 twist 协方差和过程噪声
-协方差和过程噪声参数决定了 EKF 有多相信 twist。
-如果协方差设得太小，EKF 会过度相信 twist，即使 twist 里有一点点误差，也会被放大，导致姿态更新不稳定。
-适当调大协方差或过程噪声，就相当于告诉 EKF：“别太迷信这条 twist 数据，稳一点”。
-这样可以减少数值发散的风险。
-4. 打个比方
-想象你在走钢丝：
-四元数归一化 就像每走一步都把身体重新摆正，防止越走越歪。
-NaN 检查 就像随时看脚下，如果发现踩空了，立刻停下，不继续往下掉。
-调整协方差/噪声 就像拉一根安全绳，让你不要因为风吹草动就大幅度摇晃。
-
+map→base_link TF 被刷成 NaN；tf2_echo 显示 TF 树断裂。
+EKF (/localization/pose_twist_fusion_filter/pose) 初值正常，但迅速出现 NaN；twist 线/角速度爆到 1e37。
+定位链改造步骤
+
+确认局部 ENU 方案：保留 OXTS lrf_source=1（第一帧定义局部坐标），所有链路围绕局部系运行。
+Pose Initializer
+pose_initializer.launch.xml: gnss_enabled=true、ndt_enabled=false、auto_gnss_initialize=true、gnss_use_map_fit=false。
+pose_initializer/gnss_module.cpp:
+新增 std::isfinite 检查。
+仅在 use_map_fit_ 且服务 ready 时调用 map-fit；设置 1s 超时。
+无论是否 map-fit，都给姿态协方差设置下限 (roll/pitch 0.01, yaw 0.1)。
+initial_pose_adaptor.cpp: /initialpose3d 发布前同样为姿态协方差填充下限，避免 0。
+GNSS 透传 (ndt_scan_matcher)
+保留 GNSS passthrough 发布 /localization/pose_estimator/pose_with_covariance。
+透传时若 frame_id != map，走 TF 转换；同时给协方差 21/28/35 写入下限；镜像到 NDT 输出时同样处理。
+读取参数 output_pose_covariance 后立即为姿态分量加上下限。
+观测协方差兜底
+上述改动确保 EKF 收到的姿态量测不再是 0 协方差，从而不会把 GNSS yaw 当“绝对真值”。
+如果后续需要进一步减小 yaw 影响，还可以在 EKF 中调大 yaw 协方差或屏蔽 yaw 测量。
+当前状态
+
+/localization/pose_twist_fusion_filter/pose、/tf 均已稳定；不再出现 NaN。
+/initialpose3d、map→base_link TF 与局部 GNSS 坐标保持一致，EKF 输出平滑。
+tf2_echo 能持续打印正常的变换；GNSS-only 链路按预期运行。
