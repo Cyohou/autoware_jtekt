@@ -1,1 +1,6 @@
-sudo tcpdump -i enx00249b7dc93a -nn udp and src host 195.0.0.74
+→　環境セッティングし、「oxts_ros2_driver」をインストール
+　→　ドライバーによる、GNSS信号を読み取れるどころ「Waiting for INS config information...」になり、信号とれません
+　　→　RT4000 IPアドレス確認（195.0.0.79）PC IPを同じ系に合わせ設定する（195.0.0.55）
+　　　　また、コード「sender_endpoint and required_sender_endpoint」により、希望/実際発送Port確認
+　　　→　結果希望発送Port は3000になりますが、実際発送Portは5001になります。　
+　　　→　希望発送Port を5001に修正し、Linux PC上RT4000の受信が確認できた。
