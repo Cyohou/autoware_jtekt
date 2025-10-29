@@ -1,2 +1,1 @@
-sudo timeout 10 tcpdump -i enp58s0 host 195.0.0.74 and port 3000 -s 0 -w /tmp/oxts_ncom.pcap
-sudo tcpdump -r /tmp/oxts_ncom.pcap -A | sed -n '1,120p'
+sudo tcpdump -i enx00249b7dc93a -nn udp and src host 195.0.0.74
