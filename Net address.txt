@@ -1,6 +1,22 @@
-→　環境セッティングし、「oxts_ros2_driver」をインストール
-　→　ドライバーによる、GNSS信号を読み取れるどころ「Waiting for INS config information...」になり、信号とれません
-　　→　RT4000 IPアドレス確認（195.0.0.79）PC IPを同じ系に合わせ設定する（195.0.0.55）
-　　　　また、コード「sender_endpoint and required_sender_endpoint」により、希望/実際発送Port確認
-　　　→　結果希望発送Port は3000になりますが、実際発送Portは5001になります。　
-　　　→　希望発送Port を5001に修正し、Linux PC上RT4000の受信が確認できた。
+当前 GNSS → EKF 数据链路
+
+OxTS 驱动由 oxts_driver + oxts_ins 两节点构成：前者连接硬件或回放 NCom，发布 /ins/ncom；后者在 convert.cpp 内把 NCom 解算为 ROS 消息。默认 topic_prefix="ins"，因此会发布 /ins/odometry、/ins/nav_sat_fix、/ins/imu 等。/ins/odometry 已做 geodetic→ENU/LRF 转换，并给 header.frame_id=map、child_frame_id=oxts_link。
+
+Autoware 在 launch 中把 /ins/odometry remap 为 /sensing/gnss/ins/odometry，之后的处理分两条：
+
+ndt_scan_matcher::callback_gnss_odom 订阅 /sensing/gnss/ins/odometry，做时间戳重写、TF 转换和协方差下限，发布到 /localization/pose_estimator/pose_with_covariance（EKF pose 输入），若 NDT 关了还会直接将 GNSS pose 镜像成 ndt_pose。
+gyro_odometer 也订阅同话题，把其中 twist 取出，做协方差有限性/保底，如果 frame 不匹配还 TF 到 base_link，再输出 /localization/twist_estimator/twist_with_covariance。
+ekf_localizer（通过 pose_twist_fusion_filter.launch.xml 启动）订阅上述两路，输出 /localization/pose_twist_fusion_filter/pose 与 /localization/pose_twist_fusion_filter/twist，并生成 biased pose、twist_with_covariance 等；之后还有 stop_filter、twist2accel 等后处理。
+
+现状问题
+
+虽然 /ins/odometry→/sensing/gnss/ins/odometry → EKF 的链路在跑，但 OxTS 发布的姿态仍有 180° 翻转：w≈0，x/y≈±0.8，说明 NED/body 框架未完全转换成 Autoware 期望的 map→base_link。协方差也非常小（cm 级），导致 EKF “绝对相信” 这份姿态，出现翻筋斗/不稳定。twist 通路也沿用原消息的角速度方向和协方差，问题同样传递到 EKF。
+
+因此要么在驱动层（oxts_ins::odometry）继续修正姿态、速度方向与协方差，要么在 ndt_scan_matcher / gyro_odometer 的 passthrough 中额外调整 yaw、放宽协方差，使其符合 Autoware 坐标系假设。
+
+关键文件节点
+
+OxTS 驱动配置：src/oxts_ros2_driver/oxts_driver/config/default.yaml，src/oxts_ros2_driver/oxts_ins/config/default.yaml。
+GNSS passthrough：src/universe/autoware.universe/localization/ndt_scan_matcher/src/ndt_scan_matcher_core.cpp callback_gnss_odom。
+Twist passthrough：src/universe/autoware.universe/localization/gyro_odometer/src/gyro_odometer_core.cpp callbackGnssOdom。
+EKF launch：src/universe/autoware.universe/launch/tier4_localization_launch/launch/pose_twist_fusion_filter/pose_twist_fusion_filter.launch.xml（内部 ekf_localizer.launch.xml remap 输入输出）。
