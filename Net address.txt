@@ -1,22 +1,21 @@
-当前 GNSS → EKF 数据链路
+代码调校
+聚焦定位链路：
 
-OxTS 驱动由 oxts_driver + oxts_ins 两节点构成：前者连接硬件或回放 NCom，发布 /ins/ncom；后者在 convert.cpp 内把 NCom 解算为 ROS 消息。默认 topic_prefix="ins"，因此会发布 /ins/odometry、/ins/nav_sat_fix、/ins/imu 等。/ins/odometry 已做 geodetic→ENU/LRF 转换，并给 header.frame_id=map、child_frame_id=oxts_link。
+ndt_scan_matcher_core.cpp 调整 yaw 补偿、姿态/速度处理；
+gyro_odometer 中 GNSS twist passthrough 加入速度模长投影、协方差处理；
+EKF (pose_twist_fusion_filter) launch 参数重新匹配 yaw 偏差（初期设 2.2689 rad ≈ 130°）。
+指导如何调用 /localization/pose_twist_fusion_filter/trigger_node 服务复位 EKF（Galactic 环境下 ros2 service call ... SetBool {data: true}）。
+多轮尝试（含 yaw 偏差、协方差 floor、twist smoothing 等），用户多次生成 CSV，我们逐个分析，提供均值/P90/P99 误差、 yaw diff、速度差等统计，并给出改进建议。
+问题诊断深化
 
-Autoware 在 launch 中把 /ins/odometry remap 为 /sensing/gnss/ins/odometry，之后的处理分两条：
+早期结果：twist 速度与 GNSS 接近，但 pose yaw 仍大幅偏移，定位位置误差 4–5 m。
+分析到 pose yaw 未引用新的 GNSS 基准；检查 EKF launch、pose initializer、ndt passthrough。建议 EKF yaw correction 设为 0，并在 ndt_scan_matcher 也设 0。
+修改后：位置误差降到 ~2.4 m，但 yaw 仍不对。进一步分析 gnss pose passthrough 源码，发现利用 GNSS 速度重建 yaw 时漏了把速度向量旋到 map 坐标系，导致 heading 始终偏 90°～180°。
+关键修复
+我们在 ndt_scan_matcher_core.cpp 中将 vel_flu_map 用 q_corrected 旋至 map 坐标系后再算 heading = atan2(vel_map.y(), vel_map.x())，消除车体/地图坐标系混用；并提醒重启后再复位 EKF。
 
-ndt_scan_matcher::callback_gnss_odom 订阅 /sensing/gnss/ins/odometry，做时间戳重写、TF 转换和协方差下限，发布到 /localization/pose_estimator/pose_with_covariance（EKF pose 输入），若 NDT 关了还会直接将 GNSS pose 镜像成 ndt_pose。
-gyro_odometer 也订阅同话题，把其中 twist 取出，做协方差有限性/保底，如果 frame 不匹配还 TF 到 base_link，再输出 /localization/twist_estimator/twist_with_covariance。
-ekf_localizer（通过 pose_twist_fusion_filter.launch.xml 启动）订阅上述两路，输出 /localization/pose_twist_fusion_filter/pose 与 /localization/pose_twist_fusion_filter/twist，并生成 biased pose、twist_with_covariance 等；之后还有 stop_filter、twist2accel 等后处理。
+最新数据解读
+用户生成最新 CSV：
 
-现状问题
-
-虽然 /ins/odometry→/sensing/gnss/ins/odometry → EKF 的链路在跑，但 OxTS 发布的姿态仍有 180° 翻转：w≈0，x/y≈±0.8，说明 NED/body 框架未完全转换成 Autoware 期望的 map→base_link。协方差也非常小（cm 级），导致 EKF “绝对相信” 这份姿态，出现翻筋斗/不稳定。twist 通路也沿用原消息的角速度方向和协方差，问题同样传递到 EKF。
-
-因此要么在驱动层（oxts_ins::odometry）继续修正姿态、速度方向与协方差，要么在 ndt_scan_matcher / gyro_odometer 的 passthrough 中额外调整 yaw、放宽协方差，使其符合 Autoware 坐标系假设。
-
-关键文件节点
-
-OxTS 驱动配置：src/oxts_ros2_driver/oxts_driver/config/default.yaml，src/oxts_ros2_driver/oxts_ins/config/default.yaml。
-GNSS passthrough：src/universe/autoware.universe/localization/ndt_scan_matcher/src/ndt_scan_matcher_core.cpp callback_gnss_odom。
-Twist passthrough：src/universe/autoware.universe/localization/gyro_odometer/src/gyro_odometer_core.cpp callbackGnssOdom。
-EKF launch：src/universe/autoware.universe/launch/tier4_localization_launch/launch/pose_twist_fusion_filter/pose_twist_fusion_filter.launch.xml（内部 ekf_localizer.launch.xml remap 输入输出）。
+速度误差继续优秀（平均 −0.005 km/h，|Δyaw|>5° 仅 2.3 %）。
+但 pose yaw 统计仍显示 ±180° 摆动，说明 EKF 还未接受新的姿态量测（旧状态或其他门限生效）。给出建议：检查 /localization/pose_estimator/pose 是否真的带 GNSS yaw，复位 EKF 后重采样；必要时调整 EKF 的 Mahalanobis gate / 协方差，确保 yaw 更新。
