@@ -1,1 +1,5 @@
-https://drive.google.com/drive/folders/15X4ome-GoNVPqaP0b-Mu5K5WApZwvHm_?usp=sharing
+加 stanley_diag.csv 诊断日志，记录 raw_angle、目标点索引、偏差等，方便定位抖动来源。
+试过对 yaw/目标角度 做低通滤波，观察是否能抑制高频微抖（后面认为治标）。
+试过 stangle 速率限制（限变化率），看看能否降低抖动。
+在“最近点搜索”上加 索引连续性窗口（只在上次索引附近找），减少跳变。
+在小误差区加 软死区/阈值（小偏差不放大），减少噪声放大。
