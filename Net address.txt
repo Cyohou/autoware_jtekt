@@ -1,2 +1,7 @@
-https://app.diagrams.net/?lightbox=1#Uhttps%3A%2F%2Fautowarefoundation.github.io%2Fautoware-documentation%2Fmain%2Fdesign%2Fautoware-architecture-v1%2Fnode-diagram%2Foverall-node-diagram-autoware-universe.drawio.svg#%7B%22pageId%22%3A%22T6t2FfeAp1iw48vGkmOz%22%7D
-https://autowarefoundation.github.io/autoware_universe/main/sensing/autoware_pointcloud_preprocessor/docs/distortion-corrector/
+可以先，把这这个脚本里的这两行替换成下面的试试是不是左偏移的轨迹
+self.params.k_j = float(2.0)
+self.params.k_d = flaot(0.0)
+ 
+ 
+这个估计和奖励函数相关，速度一高，它会天然的倾向于右侧的轨迹。 试验时是通过调整“hug_td3_rl”里的模仿学习的权重来强行学习人类的向左偏移行为的。【hug_td3_rl.py的458:467行 左右，是模仿学习的权重设计】
+ 
