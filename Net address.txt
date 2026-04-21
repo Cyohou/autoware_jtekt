@@ -1,74 +1,20 @@
-给开发者的说明
+第一，结合你当前代码和试验需求，整理了录包方案。结论是这次不使用 NDT，录包重点放在两类 topic：一类是现场直接分析用的结果 topic，自车用 /sensing/gnss/ins/odometry、/localization/pose_twist_fusion_filter/pose/twist/kinematic_state，邻车用 /perception/object_recognition/tracking/objects；另一类是离线重算用的原始 topic，自车核心是 /sensing/gnss/ins/ncom，邻车核心是 /sensing/lidar/top/velodyne_packets，并补充 /sensing/imu/imu_data、/sensing/vehicle_velocity_converter/twist_with_covariance、/tf、/tf_static 等保证离线 rosbag play 后还能重算。/clock 不需要录，回放时由 ros2 bag play --clock 生成即可。
 
-我们这边把问题分成了 RL参数发布、planner轨迹生成、Stanley轨迹跟踪 三层来排查，当前结论是：
+第二，确认了 OxTS 局部坐标系的使用策略。现场验证结果表明当前设备下 lrf_source=0 不可用，lrf_source=1 和 2 可用，因此正式试验建议统一用 lrf_source=2。这样每次 trial 虽然原点不同，但坐标轴方向一致，后处理只需要做平移对齐，更适合多条件试验比较。
 
-这次右偏问题，主因已经不是 RL 没学进去，而是 Stanley 实际没有去跟踪 planner 生成的左偏轨迹中后段。
-
-本次测试中，我直接在 rl_online_rl.py 里把发布参数强制改成了 [K_j=2.0, K_d=0.0]，也就是说已经绕开了在线学习，确保发送给 planner 的就是“左偏倾向”的参数。日志也确认发布值一直是 [2.0, 0.0]。
-
-为避免只靠主观观察，我额外加了三类 CSV 记录：
-
-ego_trajectory_*.csv：实际自车轨迹
-planner_trajectory_*.csv：planner 每次生成的整条轨迹
-control_tracking_*.csv：Stanley 每个控制周期实际跟踪的目标点和误差
-最新一次分析结果是：
-
-planner_trajectory 显示，planner 本身确实在持续生成左偏轨迹
-
-起点平均 d ≈ -0.14 m
-中段平均 d ≈ +0.33 m
-终点平均 d ≈ +0.79 m
-说明 planner 的意图非常明确，是想把车带到左侧。
-ego_trajectory 显示，实际自车轨迹在弯道内仍整体右偏
-
-d_mean ≈ -0.143 m
-d_median ≈ -0.148 m
-说明车并没有真正走上 planner 想要的左偏轨迹。
-control_tracking 显示，Stanley 每次实际追踪的目标点，横向位置几乎和当前自车位置重合
-
-target_d - ego_d 的平均值只有 +0.002 m
-current_index 平均只有 14 / 250
-也就是说，控制器基本只在追整条轨迹最前面约 5% 的那一小段，而不是去追后面已经明显左移的中后段轨迹。
-因此，现在的问题链路是：
-
-RL 参数已经发出
-planner 已经生成左偏轨迹
-但 Stanley 用“最近点”作为跟踪目标
-每次重规划又从当前车辆位置重新开始
-所以控制器始终只盯着轨迹起点附近，后面那段左偏轨迹一直没有真正成为控制目标
-所以当前更像是 控制层目标点选择策略的问题，不是 planner 不会左偏，也不是这次测试里 RL 参数没生效。
-
-我这边的建议是优先检查 / 修改：
-
-Stanley 是否不该直接用最近点 currentIndex，而应改成预瞄点 targetIndex = currentIndex + N
-预瞄距离是否应与车速关联
-当前重规划频率 + 最近点跟踪策略是否导致“永远只追轨迹起点”
-如果需要，我可以继续把 Stanley 改成预瞄点跟踪版本，再做一轮对照测试。
-
-
-太长了
+第三，完善了现场数据确认脚本 Trackerobject_info_extractor.py (line 20)。这次补充了邻车姿态和 yaw、自车 yaw、nav_sat_fix、nav_sat_ref、GNSS fixed 状态，并新增了邻车相对自车的纵向/横向距离、自车与邻车距离、相对速度等字段。同时增加了自动生成 PNG 检查图，能现场查看轨迹、最近邻车距离、相对速度、目标数量和 GNSS 协方差变化。还补了一个 launch 文件 trackerobject_info_extractor.launch.py (line 1)，现在可以直接用 ros2 launch autoware_launch trackerobject_info_extractor.launch.py ... 启动脚本。
 
 
 
-可以发这个短版：
 
-现在排查结果是：
+5:56 PM
+还是不够简洁，
+5:56 PM
 
-RL 参数已经正常发出，不是参数没生效。
-这次我直接强制发布了 [K_j=2.0, K_d=0.0]。
 
-planner 也确实生成了左偏轨迹。
-从记录的 planner_trajectory.csv 看，轨迹中后段和终点都明显在车道中线左侧。
 
-但实际自车轨迹还是右偏。
-从 ego_trajectory.csv 看，自车在弯道里整体仍在 lane1 中线右侧。
+今天完成了 3 件事。
 
-目前主因看起来在 Stanley 跟踪逻辑，不在 RL 和 planner。
-因为 control_tracking.csv 显示，Stanley 每次实际追踪的目标点几乎和当前自车位置重合，平均只追到了整条轨迹前面 14/250 个点，也就是大约前 5%。
-所以它没有真正去追 planner 后面那段已经左移的轨迹。
-
-结论：
-planner 想往左，Stanley 只追最近点，导致车没有真正执行左偏轨迹。
-
-建议优先检查：
-是否需要把 Stanley 的目标点从“最近点”改成“预瞄点”。
+明确了试验录包方案：不使用 NDT，这次录包分为“直接分析结果”与“离线重算原始数据”两类，保证试验数据既能直接分析，也能在数据稀疏时通过 rosbag play 重新计算。
+确认了 OxTS 使用策略：当前设备下 lrf_source=0 不可用，正式试验建议统一用 lrf_source=2，便于多条件试验后处理对齐比较。
+完善了现场确认脚本：补充了自车/邻车位置、速度、车头方向、相对距离、相对速度、GNSS 质量字段，并新增自动生成检查图，方便现场快速判断数据是否异常。
